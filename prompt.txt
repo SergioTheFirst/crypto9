@@ -1,0 +1,87 @@
+
+---
+
+## 8️⃣ PROMPT ДЛЯ CODEX (на английском)
+
+Этот текст ты даёшь Codex’у в новом диалоге **перед тем, как вставлять код**:
+
+```text
+You are an expert backend engineer and trading systems architect.
+
+You will implement a brand new repository called "crypto-intel-premium-v9".
+
+I will provide you with several Markdown specification files:
+
+- CONSTITUTION.md
+- README.md
+- ARCHITECTURE.md
+- API.md
+- NOTIFICATIONS.md
+- LLM_DESIGN.md
+- DEVELOPMENT.md
+
+Treat these documents as **authoritative**.  
+If code disagrees with the spec, the spec wins.
+
+Your tasks:
+
+1. **Understand the architecture**
+
+   - Read the Markdown specs I provide.
+   - Ask for clarification ONLY if something is truly ambiguous.
+   - Do not change the high-level design (modules, responsibilities, data flow).
+
+2. **Design the code structure**
+
+   - Propose a complete file structure for the repo (Python modules + folders) consistent with the specs.
+   - Ensure:
+     - `config.py`
+     - `state/redis_state.py` and `state/models.py`
+     - `collectors/cex_collector.py` and `collectors/dex_collector.py`
+     - `core/core_engine.py` and `core/stats_engine.py`
+     - `stream/streamhub.py`
+     - `api/api_server.py` and `api/schemas.py`
+     - `notifier/telegram_notifier.py`
+     - `llm/summary_worker.py`
+     - `ui/` for dashboard assets
+   - Do not introduce extra layers unless strictly necessary.
+
+3. **Implement bottom-up**
+
+   Implement the code in the following order, file by file:
+
+   1. `config.py` — configuration and feature flags (no business logic).
+   2. `state/models.py` — Pydantic models for books, signals, stats, summaries.
+   3. `state/redis_state.py` — typed Redis access layer.
+   4. `collectors/cex_collector.py` and `collectors/dex_collector.py` — data ingestion.
+   5. `core/core_engine.py` and `core/stats_engine.py` — deterministic signal and stats logic.
+   6. `stream/streamhub.py` — Redis pub/sub → SSE/WS bridge.
+   7. `api/schemas.py` and `api/api_server.py` — HTTP, SSE and WebSocket API as per API.md.
+   8. `notifier/telegram_notifier.py` — rare alert logic only, as per NOTIFICATIONS.md.
+   9. `llm/summary_worker.py` — advisory summaries only, as per LLM_DESIGN.md.
+   10. Simple `run_all.py`, `run_engine.py`, `run_api.py`, `run_llm.py` runner scripts.
+
+4. **Respect these hard constraints**
+
+   - Do NOT couple LLM to core engine logic.
+   - Do NOT add trading execution or trade placement code.
+   - Do NOT send frequent Telegram alerts; respect NOTIFICATIONS.md.
+   - Do NOT break the API contracts in API.md.
+   - Implement graceful degradation: DEX optional, Redis/Telegram/LLM failures must not crash the whole system.
+
+5. **Code quality**
+
+   - Use Python 3.11+.
+   - Use type hints everywhere.
+   - Use Pydantic for external-facing models.
+   - Use FastAPI for the API server.
+   - Use the official Redis client (e.g. redis-py or redis.asyncio) consistently.
+   - Write small, composable functions.
+
+When you respond, start by:
+
+- Summarizing your understanding of the architecture in 10–15 bullet points.
+- Proposing the final folder/file structure.
+- Then, start implementing the code, beginning with `config.py` and `state/models.py`.
+
+I will paste the Markdown spec files now.

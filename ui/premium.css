@@ -1,0 +1,13 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 2rem;
+}
+
+h1 {
+  color: #1f2933;
+}
+
+#status {
+  margin-bottom: 1rem;
+  font-weight: bold;
+}

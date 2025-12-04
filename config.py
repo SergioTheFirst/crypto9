@@ -16,6 +16,10 @@ class RedisSettings(BaseModel):
     decode_responses: bool = True
     prefix: str = "CIP9_STATE_"  # unified global prefix
 
+    @property
+    def url(self) -> str:
+        return f"redis://{self.host}:{self.port}/{self.db}"
+
 
 # =========================================================
 # Collector settings
@@ -23,7 +27,8 @@ class RedisSettings(BaseModel):
 class CollectorSettings(BaseModel):
     enabled: bool = True
     symbols: List[str] = ["BTCUSDT", "ETHUSDT"]
-    exchanges: List[str] = ["binance", "mexc"]
+    cex_exchanges: List[str] = ["binance", "mexc"]
+    dex_enabled: bool = False
     cycle_sec: PositiveInt = 2
 
 
@@ -32,11 +37,12 @@ class CollectorSettings(BaseModel):
 # =========================================================
 class EngineSettings(BaseModel):
     enabled: bool = True
-    min_profit_usd: PositiveFloat = 300.0
-    min_profit_pct: PositiveFloat = 0.7
+    min_profit_bps: PositiveFloat = 70.0  # 0.7%
     min_volume_usd: PositiveFloat = 15000.0
+    volume_cap_usd: PositiveFloat = 15000.0
     cooldown_sec: PositiveInt = 1800  # 30 min
     cycle_sec: PositiveInt = 2
+    stats_interval: PositiveInt = 5
 
 
 # =========================================================
@@ -46,6 +52,7 @@ class EvalSettings(BaseModel):
     enabled: bool = True
     virtual_hold_sec: PositiveInt = 30
     cycle_sec: PositiveInt = 5
+    poll_interval: PositiveInt = 5
 
 
 # =========================================================
@@ -53,9 +60,11 @@ class EvalSettings(BaseModel):
 # =========================================================
 class TelegramSettings(BaseModel):
     enabled: bool = False
-    token: Optional[str] = None
+    bot_token: Optional[str] = None
     chat_id: Optional[str] = None
+    debounce_minutes: PositiveInt = 10
     cycle_sec: PositiveInt = 5
+    profit_threshold_bps: PositiveFloat = 150.0
 
 
 # =========================================================
@@ -67,6 +76,7 @@ class LLMSettings(BaseModel):
     api_key: Optional[str] = None
     cycle_sec: PositiveInt = 20
     max_signals: PositiveInt = 20
+    summary_interval_minutes: PositiveInt = 30
 
 
 # =========================================================

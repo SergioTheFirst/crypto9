@@ -7,6 +7,7 @@ from datetime import datetime
 from config import get_config
 from state.redis_state import RedisState
 from state.models import (
+    ExchangeHealth,
     ExchangeStats,
     SignalsAggregateStats,
     SymbolMarketStats,
@@ -55,7 +56,9 @@ class StatsEngine:
         stats: list[ExchangeStats] = []
         for ex in self.cfg.collectors.cex_exchanges:
             seen = counts.get(ex, 0)
-            health = "excellent" if seen > 0 else "unstable"
+            health = (
+                ExchangeHealth.excellent if seen > 0 else ExchangeHealth.unstable
+            )
             stats.append(
                 ExchangeStats(
                     name=ex,

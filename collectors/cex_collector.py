@@ -5,16 +5,11 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
+from aiohttp import ClientError, ClientTimeout
 
 from config import get_config
 from state.redis_state import RedisState
-from state.models import (
-    ExchangeHealth,
-    ExchangeStats,
-    NormalizedBook,
-    OrderBook,
-    OrderBookLevel,
-)
+from state.models import ExchangeHealth, ExchangeStats, NormalizedBook
 
 logger = logging.getLogger("collectors.cex_collector")
 logger.setLevel(logging.INFO)
@@ -51,64 +46,118 @@ class CEXCollector:
         # circuit breaker per exchange
         self.cb_open = {ex: False for ex in self.exchanges}
         self.cb_open_ts = {ex: 0 for ex in self.exchanges}
-        self.cb_timeout = 10  # seconds
+        self.cb_timeout = 10  # seconds (bounded by [5, 30])
+
+        self._timeout = ClientTimeout(total=4)
+        self._max_retries = 3
+        self._backoff_base = 0.5
 
     # ---------------------------------------------------------
     # Bulk fetchers
     # ---------------------------------------------------------
-    async def _fetch_binance_bulk(self, session) -> Dict[str, dict]:
-        url = "https://api.binance.com/api/v3/ticker/bookTicker"
-        t0 = time.time()
-        try:
-            async with session.get(url, timeout=3) as r:
-                data = await r.json()
-        except Exception:
-            self._mark_fail("binance")
-            return {}
+    async def _fetch_binance_bulk(self, session) -> Optional[Dict[str, NormalizedBook]]:
+        return await self._fetch_with_retry(
+            session,
+            "binance",
+            "https://api.binance.com/api/v3/ticker/bookTicker",
+            bid_key="bidPrice",
+            ask_key="askPrice",
+            bid_size_key="bidQty",
+            ask_size_key="askQty",
+        )
 
-        self._mark_success("binance", latency=(time.time() - t0) * 1000)
+    async def _fetch_mexc_bulk(self, session) -> Optional[Dict[str, NormalizedBook]]:
+        return await self._fetch_with_retry(
+            session,
+            "mexc",
+            "https://api.mexc.com/api/v3/ticker/bookTicker",
+            bid_key="bidPrice",
+            ask_key="askPrice",
+            bid_size_key="bidQty",
+            ask_size_key="askQty",
+        )
 
-        out = {}
+    async def _fetch_with_retry(
+        self,
+        session: aiohttp.ClientSession,
+        exchange: str,
+        url: str,
+        *,
+        bid_key: str,
+        ask_key: str,
+        bid_size_key: str,
+        ask_size_key: str,
+    ) -> Optional[Dict[str, NormalizedBook]]:
+        if self._is_circuit_open(exchange):
+            return None
+
+        backoff = self._backoff_base
+        for attempt in range(1, self._max_retries + 1):
+            t0 = time.time()
+            try:
+                async with session.get(url, timeout=self._timeout) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                self._mark_success(exchange, latency=(time.time() - t0) * 1000)
+                return self._parse_bulk_response(
+                    exchange,
+                    data,
+                    bid_key=bid_key,
+                    ask_key=ask_key,
+                    bid_size_key=bid_size_key,
+                    ask_size_key=ask_size_key,
+                )
+            except (asyncio.TimeoutError, ClientError, ValueError, KeyError, TypeError) as exc:
+                self._mark_fail(exchange)
+                if attempt >= self._max_retries:
+                    logger.warning(
+                        "exchange_request_failed",
+                        extra={"exchange": exchange, "error": str(exc)},
+                    )
+                    break
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 4.0)
+            except Exception as exc:
+                self._mark_fail(exchange)
+                logger.error(
+                    "exchange_request_unexpected_error",
+                    extra={"exchange": exchange, "error": str(exc)},
+                )
+                break
+        return None
+
+    def _parse_bulk_response(
+        self,
+        exchange: str,
+        data: List[dict],
+        *,
+        bid_key: str,
+        ask_key: str,
+        bid_size_key: str,
+        ask_size_key: str,
+    ) -> Dict[str, NormalizedBook]:
+        out: Dict[str, NormalizedBook] = {}
         for item in data:
-            sym = item["symbol"]
-            if sym in self.symbols:
-                out[sym] = {
-                    "bid": float(item["bidPrice"]),
-                    "bid_size": float(item["bidQty"]),
-                    "ask": float(item["askPrice"]),
-                    "ask_size": float(item["askQty"])
-                }
-        return out
-
-    async def _fetch_mexc_bulk(self, session) -> Dict[str, dict]:
-        url = "https://api.mexc.com/api/v3/ticker/bookTicker"
-        t0 = time.time()
-
-        try:
-            async with session.get(url, timeout=3) as r:
-                data = await r.json()
-        except Exception:
-            self._mark_fail("mexc")
-            return {}
-
-        self._mark_success("mexc", latency=(time.time() - t0) * 1000)
-
-        out = {}
-        for item in data:
-            sym = item["symbol"]
-            if sym in self.symbols:
-                out[sym] = {
-                    "bid": float(item["bidPrice"]),
-                    "bid_size": float(item["bidQty"]),
-                    "ask": float(item["askPrice"]),
-                    "ask_size": float(item["askQty"])
-                }
+            sym = item.get("symbol")
+            if not sym or sym not in self.symbols:
+                continue
+            normalized = self._normalize_book(
+                exchange,
+                {
+                    "bid": item.get(bid_key),
+                    "ask": item.get(ask_key),
+                    "bid_size": item.get(bid_size_key),
+                    "ask_size": item.get(ask_size_key),
+                },
+            )
+            if normalized:
+                out[sym] = normalized
         return out
 
     # ---------------------------------------------------------
     # Normalization (v8-level)
     # ---------------------------------------------------------
-    def _normalize_book(self, raw: dict) -> Optional[NormalizedBook]:
+    def _normalize_book(self, exchange: str, raw: dict) -> Optional[NormalizedBook]:
         try:
             bid = float(raw["bid"])
             ask = float(raw["ask"])
@@ -127,16 +176,13 @@ class CEXCollector:
         if ask_size <= 0:
             ask_size = 0.0001
 
-        mid = (bid + ask) / 2
-        liquidity = (bid_size + ask_size) * mid
-
         return NormalizedBook(
+            exchange=exchange,
             bid=bid,
             ask=ask,
             bid_size=bid_size,
             ask_size=ask_size,
-            mid=mid,
-            liquidity_score=liquidity
+            ts=datetime.utcnow(),
         )
 
     # ---------------------------------------------------------
@@ -147,6 +193,7 @@ class CEXCollector:
         self.health[ex]["latency"] = latency
         self.health[ex]["fails"] = 0
         self.health[ex]["class"] = "excellent"
+        self.cb_open[ex] = False
 
     def _mark_fail(self, ex: str):
         self.health[ex]["fails"] += 1
@@ -186,46 +233,44 @@ class CEXCollector:
     async def _cycle(self):
         async with aiohttp.ClientSession() as session:
             tasks: List[Tuple[str, asyncio.Future]] = []
+            fetchers = {
+                "binance": self._fetch_binance_bulk,
+                "mexc": self._fetch_mexc_bulk,
+            }
 
-            if "binance" in self.exchanges and not self.cb_open["binance"]:
-                tasks.append(("binance", asyncio.create_task(self._fetch_binance_bulk(session))))
-
-            if "mexc" in self.exchanges and not self.cb_open["mexc"]:
-                tasks.append(("mexc", asyncio.create_task(self._fetch_mexc_bulk(session))))
+            for ex in self.exchanges:
+                fetcher = fetchers.get(ex)
+                if not fetcher:
+                    continue
+                if self._is_circuit_open(ex):
+                    continue
+                tasks.append((ex, asyncio.create_task(fetcher(session))))
 
             results = await asyncio.gather(
                 *(t[1] for t in tasks), return_exceptions=True
             )
 
-            merged_books: Dict[str, Dict[str, dict]] = {}
+            merged_books: Dict[str, Dict[str, NormalizedBook]] = {}
 
             for (ex, _), res in zip(tasks, results):
                 if isinstance(res, Exception):
-                    logger.error("Collector task failed for %s: %s", ex, res)
+                    logger.error(
+                        "collector_task_failed", extra={"exchange": ex, "error": str(res)}
+                    )
+                    self._mark_fail(ex)
                     continue
                 if isinstance(res, dict):
                     for sym, book in res.items():
                         merged_books.setdefault(sym, {})[ex] = book
 
-            # normalize + store
+            # store normalized books per symbol preserving exchange order
             for sym in self.symbols:
                 ex_books: Dict[str, dict] = {}
+                sym_books = merged_books.get(sym, {})
                 for ex in self.exchanges:
-                    if sym in merged_books and ex in merged_books[sym]:
-                        nb = self._normalize_book(merged_books[sym][ex])
-                        if nb:
-                            order_book = OrderBook(
-                                symbol=sym,
-                                exchange=ex,
-                                bids=[
-                                    OrderBookLevel(price=nb.bid, amount=nb.bid_size)
-                                ],
-                                asks=[
-                                    OrderBookLevel(price=nb.ask, amount=nb.ask_size)
-                                ],
-                                timestamp=datetime.utcnow(),
-                            )
-                            ex_books[ex] = order_book.model_dump(mode="json")
+                    book = sym_books.get(ex)
+                    if book:
+                        ex_books[ex] = book.model_dump(mode="json")
 
                 if ex_books:
                     await self.redis.set_books(sym, ex_books)
@@ -241,6 +286,16 @@ class CEXCollector:
             if self.cb_open[ex] and (t - self.cb_open_ts[ex] >= self.cb_timeout):
                 self.cb_open[ex] = False
                 self.health[ex]["fails"] = 0
+
+    def _is_circuit_open(self, ex: str) -> bool:
+        if not self.cb_open[ex]:
+            return False
+        t = time.time()
+        if t - self.cb_open_ts[ex] >= max(5, min(self.cb_timeout, 30)):
+            self.cb_open[ex] = False
+            self.health[ex]["fails"] = 0
+            return False
+        return True
 
     # ---------------------------------------------------------
     # Adaptive cycle timing

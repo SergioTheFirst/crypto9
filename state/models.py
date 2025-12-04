@@ -18,12 +18,13 @@ class NormalizedBook(BaseModel):
     Normalized orderbook snapshot (used by collectors and core engine).
     Compatible with Pydantic v2.
     """
+
+    exchange: str = Field(..., description="Exchange name")
     bid: float = Field(..., description="Best bid price")
     ask: float = Field(..., description="Best ask price")
     bid_size: float = Field(..., description="Available size at bid")
     ask_size: float = Field(..., description="Available size at ask")
-    mid: float = Field(..., description="Mid price")
-    liquidity_score: float = Field(..., description="Liquidity metric used by core engine")
+    ts: datetime = Field(default_factory=datetime.utcnow, description="Collection timestamp")
 
 
 class OrderBookLevel(BaseModel):

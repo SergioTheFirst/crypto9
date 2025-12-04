@@ -1,64 +1,107 @@
-"""Global configuration and feature flags for Crypto Intel Premium v9."""
 from __future__ import annotations
 
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import BaseSettings, Field, HttpUrl, PositiveFloat, PositiveInt
+from pydantic import Field, HttpUrl, PositiveFloat, PositiveInt
+from pydantic_settings import BaseSettings
 
 
 class RedisSettings(BaseSettings):
-    url: str = Field("redis://localhost:6379/0", description="Redis connection URL")
-    connection_timeout: float = Field(5.0, description="Timeout for connecting to Redis")
-    health_check_interval: float = Field(10.0, description="Interval for Redis health checks in seconds")
+    url: str = "redis://localhost:6379/0"
+    connection_timeout: float = 5.0
+    health_check_interval: float = 10.0
+
+    class Config:
+        env_prefix = "CIP9_REDIS__"
 
 
 class CollectorSettings(BaseSettings):
-    symbols: List[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"], description="Symbols to collect")
-    exchanges: List[str] = Field(default_factory=lambda: ["binance", "okx"], description="CEX exchanges to poll")
-    poll_interval: float = Field(1.0, description="Base polling interval in seconds")
-    max_backoff: float = Field(10.0, description="Maximum backoff when encountering errors")
-    http_timeout: float = Field(3.0, description="HTTP timeout for collector requests")
-    enable_dex: bool = Field(True, description="Whether to enable optional DEX collection")
+    # Пары, которые мониторим
+    symbols: List[str] = ["BTCUSDT", "ETHUSDT"]
+
+    # Список CEX, с которыми реально работаем
+    # ВАЖНО: здесь теперь две биржи
+    cex_exchanges: List[str] = ["binance", "mexc"]
+
+    # DEX пока опционален
+    dex_enabled: bool = False
+
+    poll_interval: float = 1.0
+    max_backoff: float = 10.0
+    http_timeout: float = 3.0
+
+    class Config:
+        env_prefix = "CIP9_COLLECTORS__"
 
 
 class EngineSettings(BaseSettings):
-    min_profit_bps: PositiveFloat = Field(5.0, description="Minimum profit threshold in basis points")
-    min_volume_usd: PositiveFloat = Field(100.0, description="Minimum notional volume in USD")
-    confirm_window: PositiveInt = Field(3, description="Number of consecutive observations required to confirm signal")
-    stats_interval: PositiveInt = Field(30, description="Seconds between stats snapshots")
+    # Минимальная прибыль в бипсах ПОСЛЕ комиссий
+    min_profit_bps: PositiveFloat = 5.0
+
+    # Минимальный объём, который считаем осмысленным
+    min_volume_usd: PositiveFloat = 100.0
+
+    # Целевой объём сделки (ты просил ~3000 USDT)
+    volume_cap_usd: PositiveFloat = 3000.0
+
+    # Через сколько тиков считать сигнал устойчивым (запас на будущее)
+    confirm_window: PositiveInt = 3
+
+    # Как часто пересчитывать агрегированные статы
+    stats_interval: PositiveInt = 30
+
+    class Config:
+        env_prefix = "CIP9_ENGINE__"
+
+
+class EvalSettings(BaseSettings):
+    fast_seconds: PositiveInt = 10
+    slow_seconds: PositiveInt = 60
+    poll_interval: PositiveInt = 5
+
+    class Config:
+        env_prefix = "CIP9_EVAL__"
 
 
 class TelegramSettings(BaseSettings):
-    enabled: bool = Field(False, description="Toggle Telegram notifications")
-    bot_token: Optional[str] = Field(None, description="Telegram bot token")
-    chat_id: Optional[str] = Field(None, description="Telegram chat identifier")
-    rate_limit_per_hour: PositiveInt = Field(12, description="Maximum number of messages per hour")
-    debounce_minutes: PositiveInt = Field(10, description="Minimum minutes between similar alerts")
-    profit_threshold_bps: PositiveFloat = Field(25.0, description="Profit threshold for critical alerts in bps")
+    enabled: bool = False
+    bot_token: Optional[str] = None
+    chat_id: Optional[str] = None
+    rate_limit_per_hour: int = 12
+    debounce_minutes: int = 10
+    profit_threshold_bps: float = 25.0
+
+    class Config:
+        env_prefix = "CIP9_TELEGRAM__"
 
 
 class LLMSettings(BaseSettings):
-    enabled: bool = Field(False, description="Toggle LLM summary worker")
-    provider: Optional[str] = Field(None, description="LLM provider identifier")
-    api_key: Optional[str] = Field(None, description="LLM API key")
-    summary_interval_minutes: PositiveInt = Field(60, description="Interval for generating summaries")
-    max_signals: PositiveInt = Field(20, description="Number of recent signals to summarize")
+    enabled: bool = False
+    summary_interval_minutes: int = 60
+    max_signals: int = 20
+
+    class Config:
+        env_prefix = "CIP9_LLM__"
 
 
 class APISettings(BaseSettings):
-    host: str = Field("127.0.0.1", description="API host")
-    port: int = Field(8000, description="API port")
-    cors_origins: List[HttpUrl] = Field(default_factory=list, description="Allowed CORS origins")
+    host: str = "127.0.0.1"
+    port: int = 8000
+    cors_origins: List[HttpUrl] = []
+
+    class Config:
+        env_prefix = "CIP9_API__"
 
 
 class Config(BaseSettings):
-    redis: RedisSettings = Field(default_factory=RedisSettings)
-    collectors: CollectorSettings = Field(default_factory=CollectorSettings)
-    engine: EngineSettings = Field(default_factory=EngineSettings)
-    telegram: TelegramSettings = Field(default_factory=TelegramSettings)
-    llm: LLMSettings = Field(default_factory=LLMSettings)
-    api: APISettings = Field(default_factory=APISettings)
+    redis: RedisSettings = RedisSettings()
+    collectors: CollectorSettings = CollectorSettings()
+    engine: EngineSettings = EngineSettings()
+    eval: EvalSettings = EvalSettings()
+    telegram: TelegramSettings = TelegramSettings()
+    llm: LLMSettings = LLMSettings()
+    api: APISettings = APISettings()
 
     class Config:
         env_nested_delimiter = "__"
@@ -66,18 +109,10 @@ class Config(BaseSettings):
 
 
 @lru_cache(maxsize=1)
-def get_config() -> Config:
-    """Load and cache the application configuration from environment variables."""
-    return Config()  # type: ignore[call-arg]
+def get_config() -> AppConfig:
+    return AppConfig()
 
-
-__all__ = [
-    "RedisSettings",
-    "CollectorSettings",
-    "EngineSettings",
-    "TelegramSettings",
-    "LLMSettings",
-    "APISettings",
-    "Config",
-    "get_config",
-]
+# ============================================================
+# Global CONFIG instance for v9.1 modules
+# ============================================================
+CONFIG = get_config()

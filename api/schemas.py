@@ -1,33 +1,43 @@
-"""API response schemas."""
 from __future__ import annotations
 
 from typing import List
 
 from pydantic import BaseModel
 
-from state.models import LLMSummary, Signal, SystemStats
+from state.models import (
+    Event,
+    ExchangeStats,
+    LLMSummary,
+    Signal,
+    SignalsAggregateStats,
+    SymbolMarketStats,
+    SystemStatus,
+)
 
 
-class HealthResponse(BaseModel):
-    status: str
-    redis_ok: bool
+class StatusResponse(SystemStatus):
+    pass
 
 
 class SignalsResponse(BaseModel):
     signals: List[Signal]
 
 
-class StatsResponse(BaseModel):
-    stats: SystemStats
+class MarketStatsResponse(BaseModel):
+    symbols: List[SymbolMarketStats]
+
+
+class ExchangeStatsResponse(BaseModel):
+    exchanges: List[ExchangeStats]
+
+
+class SignalsStatsResponse(SignalsAggregateStats):
+    pass
+
+
+class EventsResponse(BaseModel):
+    events: List[Event]
 
 
 class SummariesResponse(BaseModel):
-    summaries: List[LLMSummary]
-
-
-__all__ = [
-    "HealthResponse",
-    "SignalsResponse",
-    "StatsResponse",
-    "SummariesResponse",
-]
+    events: List[LLMSummary]

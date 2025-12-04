@@ -1,15 +1,16 @@
-"""Pydantic models representing shared state stored in Redis."""
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field, PositiveFloat, PositiveInt
 
 
 class ExchangeHealth(str, Enum):
-    healthy = "healthy"
+    excellent = "excellent"
+    good = "good"
+    unstable = "unstable"
     degraded = "degraded"
     offline = "offline"
 
@@ -27,15 +28,14 @@ class OrderBook(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
-class RouteQuote(BaseModel):
+class Route(BaseModel):
     symbol: str
     buy_exchange: str
     sell_exchange: str
     buy_price: PositiveFloat
     sell_price: PositiveFloat
-    spread_bps: float
     volume_usd: PositiveFloat
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class SignalSeverity(str, Enum):
@@ -46,64 +46,73 @@ class SignalSeverity(str, Enum):
 
 class Signal(BaseModel):
     id: str
-    route: RouteQuote
-    confidence: float = Field(..., ge=0.0, le=1.0)
+    symbol: str
+    route: Route
     expected_profit_bps: float
     expected_profit_usd: float
-    status: str = Field("new", description="new|confirmed|expired")
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    status: str = "new"
     severity: SignalSeverity = SignalSeverity.info
+    tags: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SymbolMarketStats(BaseModel):
+    symbol: str
+    last_mid: float
+    volatility_1h: float
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class ExchangeStats(BaseModel):
-    exchange: str
-    health: ExchangeHealth = ExchangeHealth.healthy
+    name: str
+    health: ExchangeHealth
     latency_ms: float
-    error_rate: float = Field(0.0, ge=0.0, le=1.0)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    error_rate: float
+    timeout_rate: float = 0.0
+    books_seen: int = 0
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class MarketStats(BaseModel):
-    symbol: str
-    volatility: float
-    mid_price: float
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+class SignalsAggregateStats(BaseModel):
+    total_signals: int
+    active_signals: int
+    avg_profit_bps: float
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-class SystemStats(BaseModel):
-    redis_ok: bool
-    active_exchanges: List[str] = Field(default_factory=list)
-    active_symbols: List[str] = Field(default_factory=list)
-    total_signals: int = 0
-    exchange_stats: List[ExchangeStats] = Field(default_factory=list)
-    market_stats: List[MarketStats] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class LLMEvent(BaseModel):
-    kind: str
-    payload: Dict[str, object]
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+class SystemStatus(BaseModel):
+    status: str = "ok"
+    redis: str = "ok"
+    llm: str = "disabled"
+    telegram: str = "disabled"
+    dex: str = "unavailable"
+    symbols: int = 0
+    exchanges: Dict[str, str] = Field(default_factory=dict)
+    last_update_ts: datetime = Field(default_factory=datetime.utcnow)
 
 
 class LLMSummary(BaseModel):
     id: str
-    kind: str = Field("llm_summary", const=True)
+    kind: Literal["llm_summary"] = "llm_summary"
     title: str
     text: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-__all__ = [
-    "ExchangeHealth",
-    "OrderBookLevel",
-    "OrderBook",
-    "RouteQuote",
-    "SignalSeverity",
-    "Signal",
-    "ExchangeStats",
-    "MarketStats",
-    "SystemStats",
-    "LLMEvent",
-    "LLMSummary",
-]
+class Event(BaseModel):
+    id: str
+    kind: str
+    title: str
+    text: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SignalEvalResult(BaseModel):
+    signal_id: str
+    fast_done: bool = False
+    slow_done: bool = False
+    real_profit_fast_bps: Optional[float] = None
+    real_profit_slow_bps: Optional[float] = None
+    execution_quality: Optional[str] = None
+    stability_quality: Optional[str] = None

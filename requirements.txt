@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+redis
+aiohttp
+pydantic>=2.0
+pydantic-settings
+sse-starlette

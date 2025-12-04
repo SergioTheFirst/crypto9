@@ -1,61 +1,51 @@
-"""Convenience launcher for the full stack."""
-from __future__ import annotations
-
 import asyncio
 import logging
 
-import uvicorn
-
-from api.api_server import create_app
+from config import get_config
+from state.redis_state import RedisState
 from collectors.cex_collector import run_cex_collector
 from collectors.dex_collector import run_dex_collector
-from config import get_config
 from core.core_engine import run_core_engine
+from core.eval_engine import run_eval_engine
 from core.stats_engine import run_stats_engine
-from llm.summary_worker import run_summary_worker
-from notifier.telegram_notifier import TelegramNotifier
-from state.redis_state import RedisState
+from llm.summary_worker import SummaryWorker
+from notifier.telegram_notifier import run_notifier
+from api.api_server import run_api
 
-logging.basicConfig(level=logging.INFO)
-
-
-async def _run_api(app, host: str, port: int) -> None:
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("run_all")
 
 
-async def _run_notifier(redis_state: RedisState) -> None:
-    notifier = TelegramNotifier(redis_state)
-    await notifier.run()
-
-
-async def main() -> None:
+async def main():
     cfg = get_config()
-    redis_state = RedisState()
-    app = create_app(redis_state)
+    redis_state = RedisState(cfg.redis.url)
 
-    tasks = [
-        asyncio.create_task(run_cex_collector()),
-        asyncio.create_task(run_core_engine()),
-        asyncio.create_task(run_stats_engine()),
-        asyncio.create_task(_run_api(app, cfg.api.host, cfg.api.port)),
-    ]
-    if cfg.collectors.enable_dex:
-        tasks.append(asyncio.create_task(run_dex_collector()))
+    tasks = []
+
+    tasks.append(asyncio.create_task(run_cex_collector(redis_state)))
+    if cfg.collectors.dex_enabled:
+        tasks.append(asyncio.create_task(run_dex_collector(redis_state)))
+    tasks.append(asyncio.create_task(run_core_engine(redis_state)))
+    tasks.append(asyncio.create_task(run_eval_engine(redis_state)))
+    tasks.append(asyncio.create_task(run_stats_engine(redis_state)))
+
     if cfg.llm.enabled:
-        tasks.append(asyncio.create_task(run_summary_worker()))
-    if cfg.telegram.enabled:
-        tasks.append(asyncio.create_task(_run_notifier(redis_state)))
+        worker = SummaryWorker(redis_state)
+        tasks.append(asyncio.create_task(worker.run()))
 
-    try:
-        await asyncio.gather(*tasks)
-    finally:
-        await redis_state.close()
+    if cfg.telegram.enabled:
+        tasks.append(asyncio.create_task(run_notifier(redis_state)))
+
+    tasks.append(asyncio.create_task(run_api(redis_state)))
+
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        print("Shutting down...")

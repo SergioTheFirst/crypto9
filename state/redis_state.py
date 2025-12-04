@@ -1,114 +1,142 @@
-"""Typed Redis access layer for Crypto Intel Premium v9."""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import List, Optional
+import logging
+from typing import Dict, List, Optional
 
 from redis.asyncio import Redis
 
-from config import get_config
 from state.models import (
+    Event,
     ExchangeStats,
     LLMSummary,
-    OrderBook,
     Signal,
-    SystemStats,
+    SignalEvalResult,
+    SignalsAggregateStats,
+    SymbolMarketStats,
+    SystemStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RedisState:
-    """Provides typed access to Redis-backed state."""
+    def __init__(self, url: str):
+        self.client: Redis = Redis.from_url(url, decode_responses=True)
 
-    def __init__(self, redis: Optional[Redis] = None) -> None:
-        cfg = get_config().redis
-        self._redis = redis or Redis.from_url(
-            cfg.url,
-            encoding="utf-8",
-            decode_responses=True,
-            socket_connect_timeout=cfg.connection_timeout,
-            health_check_interval=cfg.health_check_interval,
+    async def close(self):
+        await self.client.close()
+
+    # ------------- books -------------
+
+    async def set_books(self, symbol: str, books: Dict[str, dict]) -> None:
+        await self.client.set(f"state:books:{symbol}", json.dumps(books))
+
+    async def get_books(self, symbol: str) -> Dict[str, dict]:
+        raw = await self.client.get(f"state:books:{symbol}")
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+    async def get_all_books(self) -> Dict[str, Dict[str, dict]]:
+        out: Dict[str, Dict[str, dict]] = {}
+        async for key in self.client.scan_iter("state:books:*"):
+            symbol = key.split(":", 2)[2]
+            out[symbol] = await self.get_books(symbol)
+        return out
+
+    # ------------- market stats -------------
+
+    async def set_market_stats(self, items: List[SymbolMarketStats]) -> None:
+        await self.client.set(
+            "state:market_stats",
+            json.dumps([i.model_dump(mode="json") for i in items]),
         )
-        self._pubsub_channel = "events"
 
-    @property
-    def redis(self) -> Redis:
-        return self._redis
+    async def get_market_stats(self) -> List[SymbolMarketStats]:
+        raw = await self.client.get("state:market_stats")
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return [SymbolMarketStats(**d) for d in data]
 
-    async def close(self) -> None:
-        await self._redis.aclose()
+    # ------------- exchange stats -------------
 
-    async def set_order_book(self, book: OrderBook) -> None:
-        key = f"book:{book.exchange}:{book.symbol}"
-        await self._redis.set(key, book.model_dump_json())
-        await self._redis.publish(self._pubsub_channel, json.dumps({"type": "book", "key": key}))
-
-    async def get_order_book(self, exchange: str, symbol: str) -> Optional[OrderBook]:
-        data = await self._redis.get(f"book:{exchange}:{symbol}")
-        if not data:
-            return None
-        return OrderBook.model_validate_json(data)
-
-    async def set_signal(self, signal: Signal) -> None:
-        await self._redis.set(f"signal:{signal.id}", signal.model_dump_json())
-        await self._redis.lpush("signals", signal.model_dump_json())
-        await self._redis.ltrim("signals", 0, 499)
-        await self._redis.publish(self._pubsub_channel, json.dumps({"type": "signal", "id": signal.id}))
-
-    async def get_signal(self, signal_id: str) -> Optional[Signal]:
-        data = await self._redis.get(f"signal:{signal_id}")
-        if not data:
-            return None
-        return Signal.model_validate_json(data)
-
-    async def recent_signals(self, limit: int = 50) -> List[Signal]:
-        entries = await self._redis.lrange("signals", 0, limit - 1)
-        return [Signal.model_validate_json(e) for e in entries]
-
-    async def set_system_stats(self, stats: SystemStats) -> None:
-        await self._redis.set("stats:system", stats.model_dump_json())
-        await self._redis.publish(self._pubsub_channel, json.dumps({"type": "stats"}))
-
-    async def get_system_stats(self) -> Optional[SystemStats]:
-        data = await self._redis.get("stats:system")
-        if not data:
-            return None
-        return SystemStats.model_validate_json(data)
-
-    async def upsert_exchange_stats(self, stats: ExchangeStats) -> None:
-        await self._redis.hset("stats:exchange", stats.exchange, stats.model_dump_json())
+    async def set_exchange_stats(self, items: List[ExchangeStats]) -> None:
+        await self.client.set(
+            "state:exchange_stats",
+            json.dumps([i.model_dump(mode="json") for i in items]),
+        )
 
     async def get_exchange_stats(self) -> List[ExchangeStats]:
-        raw = await self._redis.hvals("stats:exchange")
-        return [ExchangeStats.model_validate_json(item) for item in raw]
+        raw = await self.client.get("state:exchange_stats")
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return [ExchangeStats(**d) for d in data]
 
-    async def store_llm_summary(self, summary: LLMSummary) -> None:
-        await self._redis.lpush("llm:summaries", summary.model_dump_json())
-        await self._redis.ltrim("llm:summaries", 0, 19)
-        await self._redis.publish(self._pubsub_channel, json.dumps({"type": "llm_summary", "id": summary.id}))
+    # ------------- system status -------------
 
-    async def recent_llm_summaries(self, limit: int = 5) -> List[LLMSummary]:
-        entries = await self._redis.lrange("llm:summaries", 0, limit - 1)
-        return [LLMSummary.model_validate_json(e) for e in entries]
+    async def set_system_status(self, status: SystemStatus) -> None:
+        await self.client.set(
+            "state:system_status",
+            json.dumps(status.model_dump(mode="json")),
+        )
 
-    async def subscribe_events(self):
-        pubsub = self._redis.pubsub()
-        await pubsub.subscribe(self._pubsub_channel)
-        try:
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                yield message["data"]
-        finally:
-            await pubsub.unsubscribe(self._pubsub_channel)
-            await pubsub.close()
+    async def get_system_status(self) -> Optional[SystemStatus]:
+        raw = await self.client.get("state:system_status")
+        if not raw:
+            return None
+        return SystemStatus(**json.loads(raw))
 
-    async def ping(self) -> bool:
-        try:
-            await asyncio.wait_for(self._redis.ping(), timeout=2)
-            return True
-        except Exception:
-            return False
+    # ------------- signals -------------
 
+    async def set_signals(self, signals: List[Signal]) -> None:
+        await self.client.set(
+            "state:signals",
+            json.dumps([s.model_dump(mode="json") for s in signals]),
+        )
 
-__all__ = ["RedisState"]
+    async def get_signals(self) -> List[dict]:
+        raw = await self.client.get("state:signals")
+        if not raw:
+            return []
+        return json.loads(raw)
+
+    async def append_signal(self, signal: Signal) -> None:
+        signals = await self.get_signals()
+        signals.append(signal.model_dump(mode="json"))
+        await self.client.set("state:signals", json.dumps(signals))
+        await self.client.publish("streamhub:signals", json.dumps(signal.model_dump(mode="json")))
+
+    # ------------- signal stats -------------
+
+    async def set_signal_stats(self, stats: SignalsAggregateStats) -> None:
+        await self.client.set(
+            "state:signal_stats",
+            json.dumps(stats.model_dump(mode="json")),
+        )
+
+    async def get_signal_stats(self) -> Optional[SignalsAggregateStats]:
+        raw = await self.client.get("state:signal_stats")
+        if not raw:
+            return None
+        return SignalsAggregateStats(**json.loads(raw))
+
+    # ------------- LLM summaries & events -------------
+
+    async def add_llm_summary(self, summary: LLMSummary) -> None:
+        raw = await self.client.get("state:llm_summaries")
+        items = json.loads(raw) if raw else []
+        items.append(summary.model_dump(mode="json"))
+        await self.client.set("state:llm_summaries", json.dumps(items))
+        await self.client.publish("streamhub:events", json.dumps(summary.model_dump(mode="json")))
+
+    async def get_llm_summaries(self, limit: int = 10) -> List[dict]:
+        raw = await self.client.get("state:llm_summaries")
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return data[-limit:]
+
+    # eval results reserved for future

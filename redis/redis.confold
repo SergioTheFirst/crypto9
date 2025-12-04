@@ -1,0 +1,16 @@
+bind 127.0.0.1
+port 6379
+timeout 0
+tcp-keepalive 300
+
+logfile "redis.log"
+loglevel notice
+
+dir ./data
+dbfilename dump.rdb
+
+save 900 1
+save 300 10
+save 60 10000
+
+appendonly no

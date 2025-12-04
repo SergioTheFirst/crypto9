@@ -1,0 +1,11 @@
+[24960] 26 Nov 17:39:01.234 # Can't chdir to './data': Не удается найти указанный файл.
+[28456] 26 Nov 17:41:44.781 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+[28456] 26 Nov 17:41:44.781 # Redis version=5.0.14.1, bits=64, commit=ec77f72d, modified=0, pid=28456, just started
+[28456] 26 Nov 17:41:44.781 # Configuration loaded
+[28456] 26 Nov 17:41:44.785 * Running mode=standalone, port=6379.
+[28456] 26 Nov 17:41:44.785 # Server initialized
+[28456] 26 Nov 17:41:44.785 * Ready to accept connections
+[28456] 26 Nov 17:41:55.035 # User requested shutdown...
+[28456] 26 Nov 17:41:55.035 * Saving the final RDB snapshot before exiting.
+[28456] 26 Nov 17:41:55.075 * DB saved on disk
+[28456] 26 Nov 17:41:55.075 # Redis is now ready to exit, bye bye...

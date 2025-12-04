@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Literal
+from typing import Dict, List, Literal
 
-from pydantic import BaseModel, Field, PositiveFloat, PositiveInt
+from pydantic import BaseModel, Field, PositiveFloat
 
 
 class ExchangeHealth(str, Enum):
@@ -13,18 +13,20 @@ class ExchangeHealth(str, Enum):
     unstable = "unstable"
     degraded = "degraded"
     offline = "offline"
+
+
 class NormalizedBook(BaseModel):
     """
-    Normalized orderbook snapshot (used by collectors and core engine).
-    Compatible with Pydantic v2.
+    Normalized orderbook snapshot used by collectors and the core engine.
+    Prices and sizes are expressed as floats for quick arithmetic.
     """
 
-    exchange: str = Field(..., description="Exchange name")
-    bid: float = Field(..., description="Best bid price")
-    ask: float = Field(..., description="Best ask price")
-    bid_size: float = Field(..., description="Available size at bid")
-    ask_size: float = Field(..., description="Available size at ask")
-    ts: datetime = Field(default_factory=datetime.utcnow, description="Collection timestamp")
+    exchange: str
+    bid: float
+    ask: float
+    bid_size: float
+    ask_size: float
+    ts: datetime = Field(default_factory=datetime.utcnow)
 
 
 class OrderBookLevel(BaseModel):
@@ -131,10 +133,10 @@ class SignalEvalResult(BaseModel):
     signal_id: str
     fast_done: bool = False
     slow_done: bool = False
-    real_profit_fast_bps: Optional[float] = None
-    real_profit_slow_bps: Optional[float] = None
-    execution_quality: Optional[str] = None
-    stability_quality: Optional[str] = None
+    real_profit_fast_bps: float | None = None
+    real_profit_slow_bps: float | None = None
+    execution_quality: str | None = None
+    stability_quality: str | None = None
 
 
 class VirtualTrade(BaseModel):
@@ -144,7 +146,7 @@ class VirtualTrade(BaseModel):
     sell_exchange: str
     open_price_buy: float
     open_price_sell: float
-    open_ts: datetime
+    open_ts: datetime = Field(default_factory=datetime.utcnow)
     volume_usd: float
     predicted_profit_usd: float
 
@@ -158,3 +160,23 @@ class VirtualEvalResult(BaseModel):
     eval_ts: datetime
     final_profit_usd: float
     grade: Literal["WIN", "NEUTRAL", "LOSS"]
+
+
+__all__ = [
+    "ExchangeHealth",
+    "NormalizedBook",
+    "OrderBookLevel",
+    "OrderBook",
+    "Route",
+    "SignalSeverity",
+    "Signal",
+    "SymbolMarketStats",
+    "ExchangeStats",
+    "SignalsAggregateStats",
+    "SystemStatus",
+    "LLMSummary",
+    "Event",
+    "SignalEvalResult",
+    "VirtualTrade",
+    "VirtualEvalResult",
+]

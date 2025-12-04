@@ -10,6 +10,7 @@ from state.models import (
     Event,
     ExchangeStats,
     LLMSummary,
+    OrderBook,
     Signal,
     SignalEvalResult,
     SignalsAggregateStats,
@@ -31,17 +32,28 @@ class RedisState:
 
     # ------------- books -------------
 
-    async def set_books(self, symbol: str, books: Dict[str, dict]) -> None:
-        await self.client.set(f"state:books:{symbol}", json.dumps(books))
+    async def set_books(self, symbol: str, books: Dict[str, OrderBook]) -> None:
+        payload = {ex: book.model_dump(mode="json") for ex, book in books.items()}
+        await self.client.set(f"state:books:{symbol}", json.dumps(payload))
 
-    async def get_books(self, symbol: str) -> Dict[str, dict]:
+    async def get_books(self, symbol: str) -> Dict[str, OrderBook]:
         raw = await self.client.get(f"state:books:{symbol}")
         if not raw:
             return {}
-        return json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        out: Dict[str, OrderBook] = {}
+        for ex, book in data.items():
+            try:
+                out[ex] = OrderBook(**book)
+            except Exception:
+                continue
+        return out
 
-    async def get_all_books(self) -> Dict[str, Dict[str, dict]]:
-        out: Dict[str, Dict[str, dict]] = {}
+    async def get_all_books(self) -> Dict[str, Dict[str, OrderBook]]:
+        out: Dict[str, Dict[str, OrderBook]] = {}
         async for key in self.client.scan_iter("state:books:*"):
             symbol = key.split(":", 2)[2]
             out[symbol] = await self.get_books(symbol)
@@ -59,7 +71,10 @@ class RedisState:
         raw = await self.client.get("state:market_stats")
         if not raw:
             return []
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
         return [SymbolMarketStats(**d) for d in data]
 
     # ------------- exchange stats -------------
@@ -74,7 +89,10 @@ class RedisState:
         raw = await self.client.get("state:exchange_stats")
         if not raw:
             return []
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
         return [ExchangeStats(**d) for d in data]
 
     # ------------- system status -------------
@@ -89,7 +107,10 @@ class RedisState:
         raw = await self.client.get("state:system_status")
         if not raw:
             return None
-        return SystemStatus(**json.loads(raw))
+        try:
+            return SystemStatus(**json.loads(raw))
+        except Exception:
+            return None
 
     # ------------- signals -------------
 
@@ -99,22 +120,34 @@ class RedisState:
             json.dumps([s.model_dump(mode="json") for s in signals]),
         )
 
-    async def get_signals(self) -> List[dict]:
+    async def get_signals(self) -> List[Signal]:
         raw = await self.client.get("state:signals")
         if not raw:
             return []
-        return json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        out: List[Signal] = []
+        for item in data:
+            try:
+                out.append(Signal(**item))
+            except Exception:
+                continue
+        return out
 
     async def append_signal(self, signal: Signal) -> None:
         signals = await self.get_signals()
-        signals.append(signal.model_dump(mode="json"))
-        await self.client.set("state:signals", json.dumps(signals))
+        signals.append(signal)
+        payload = [s.model_dump(mode="json") for s in signals]
+        await self.client.set("state:signals", json.dumps(payload))
         await self.client.publish("streamhub:signals", json.dumps(signal.model_dump(mode="json")))
 
     # ------------- eval buffers -------------
 
-    async def set_eval_pending(self, signal_id: str, payload: dict) -> None:
-        await self.client.set(f"eval:pending:{signal_id}", json.dumps(payload))
+    async def set_eval_pending(self, signal_id: str, payload: VirtualTrade | dict) -> None:
+        data = payload.model_dump(mode="json") if isinstance(payload, VirtualTrade) else payload
+        await self.client.set(f"eval:pending:{signal_id}", json.dumps(data))
 
     async def get_all_eval_pending(self) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
@@ -227,7 +260,10 @@ class RedisState:
         raw = await self.client.get("state:signal_stats")
         if not raw:
             return None
-        return SignalsAggregateStats(**json.loads(raw))
+        try:
+            return SignalsAggregateStats(**json.loads(raw))
+        except Exception:
+            return None
 
     # ------------- LLM summaries & events -------------
 
@@ -238,11 +274,43 @@ class RedisState:
         await self.client.set("state:llm_summaries", json.dumps(items))
         await self.client.publish("streamhub:events", json.dumps(summary.model_dump(mode="json")))
 
-    async def get_llm_summaries(self, limit: int = 10) -> List[dict]:
+    async def get_llm_summaries(self, limit: int = 10) -> List[LLMSummary]:
         raw = await self.client.get("state:llm_summaries")
         if not raw:
             return []
-        data = json.loads(raw)
-        return data[-limit:]
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        summaries: List[LLMSummary] = []
+        for entry in data[-limit:]:
+            try:
+                summaries.append(LLMSummary(**entry))
+            except Exception:
+                continue
+        return summaries
+
+    async def add_event(self, event: Event) -> None:
+        raw = await self.client.get("state:events")
+        items = json.loads(raw) if raw else []
+        items.append(event.model_dump(mode="json"))
+        await self.client.set("state:events", json.dumps(items))
+        await self.client.publish("streamhub:events", json.dumps(event.model_dump(mode="json")))
+
+    async def get_events(self, limit: int = 50) -> List[Event]:
+        raw = await self.client.get("state:events")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        events: List[Event] = []
+        for entry in data[-limit:]:
+            try:
+                events.append(Event(**entry))
+            except Exception:
+                continue
+        return events
 
     # eval results reserved for future

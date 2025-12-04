@@ -1,9 +1,8 @@
-from __future__ import annotations
-
+import asyncio
 import logging
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sse_starlette.sse import EventSourceResponse
 
 from state.redis_state import RedisState
@@ -15,12 +14,22 @@ async def redis_sse_stream(redis: RedisState, channel: str) -> AsyncGenerator[st
     pubsub = redis.client.pubsub()
     await pubsub.subscribe(channel)
     try:
-        async for msg in pubsub.listen():
-            if msg["type"] == "message":
-                yield f"data: {msg['data']}\n\n"
+        while True:
+            try:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message and message.get("type") == "message":
+                    yield f"data: {message['data']}\n\n"
+                else:
+                    yield "data: {}\n\n"
+                await asyncio.sleep(0.1)
+            except Exception as exc:
+                logger.warning("sse_stream_error", extra={"channel": channel, "error": str(exc)})
+                await asyncio.sleep(0.5)
     finally:
-        await pubsub.unsubscribe(channel)
-        await pubsub.close()
+        try:
+            await pubsub.unsubscribe(channel)
+        finally:
+            await pubsub.close()
 
 
 def get_stream_router(redis: RedisState) -> APIRouter:
@@ -40,12 +49,25 @@ def get_stream_router(redis: RedisState) -> APIRouter:
         pubsub = redis.client.pubsub()
         await pubsub.subscribe("streamhub:signals")
         try:
-            async for msg in pubsub.listen():
-                if msg["type"] == "message":
-                    await ws.send_text(msg["data"])
+            while True:
+                try:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message and message.get("type") == "message":
+                        await ws.send_text(message["data"])
+                    await asyncio.sleep(0.05)
+                except WebSocketDisconnect:
+                    break
+                except Exception as exc:
+                    logger.warning("ws_stream_error", extra={"error": str(exc)})
+                    await asyncio.sleep(0.2)
         finally:
-            await pubsub.unsubscribe("streamhub:signals")
-            await pubsub.close()
-            await ws.close()
+            try:
+                await pubsub.unsubscribe("streamhub:signals")
+            finally:
+                await pubsub.close()
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     return router

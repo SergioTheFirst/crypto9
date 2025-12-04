@@ -109,8 +109,8 @@ class Config(BaseSettings):
 
 
 @lru_cache(maxsize=1)
-def get_config() -> AppConfig:
-    return AppConfig()
+def get_config() -> Config:
+    return Config()
 
 # ============================================================
 # Global CONFIG instance for v9.1 modules

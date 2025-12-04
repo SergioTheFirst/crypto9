@@ -94,6 +94,9 @@ class SignalsAggregateStats(BaseModel):
     total_signals: int
     active_signals: int
     avg_profit_bps: float
+    total_evaluated: int = 0
+    win_rate: float = 0.0
+    avg_final_profit_usd: float = 0.0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -132,3 +135,26 @@ class SignalEvalResult(BaseModel):
     real_profit_slow_bps: Optional[float] = None
     execution_quality: Optional[str] = None
     stability_quality: Optional[str] = None
+
+
+class VirtualTrade(BaseModel):
+    signal_id: str
+    symbol: str
+    buy_exchange: str
+    sell_exchange: str
+    open_price_buy: float
+    open_price_sell: float
+    open_ts: datetime
+    volume_usd: float
+    predicted_profit_usd: float
+
+
+class VirtualEvalResult(BaseModel):
+    signal_id: str
+    symbol: str
+    buy_exchange: str
+    sell_exchange: str
+    open_ts: datetime
+    eval_ts: datetime
+    final_profit_usd: float
+    grade: Literal["WIN", "NEUTRAL", "LOSS"]

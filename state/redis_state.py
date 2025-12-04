@@ -15,6 +15,8 @@ from state.models import (
     SignalsAggregateStats,
     SymbolMarketStats,
     SystemStatus,
+    VirtualEvalResult,
+    VirtualTrade,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,83 @@ class RedisState:
         history = json.loads(raw) if raw else []
         history.append(payload)
         await self.client.set(key, json.dumps(history))
+
+    async def set_eval_pending_trade(
+        self, trade: VirtualTrade, ttl_seconds: Optional[int] = None
+    ) -> None:
+        payload = trade.model_dump(mode="json")
+        if ttl_seconds:
+            await self.client.set(
+                f"eval:pending:{trade.signal_id}", json.dumps(payload), ex=ttl_seconds
+            )
+        else:
+            await self.client.set(
+                f"eval:pending:{trade.signal_id}", json.dumps(payload)
+            )
+
+    async def get_eval_pending_trade(
+        self, signal_id: str
+    ) -> Optional[VirtualTrade]:
+        raw = await self.client.get(f"eval:pending:{signal_id}")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        try:
+            return VirtualTrade(**data)
+        except Exception:
+            return None
+
+    async def get_all_eval_pending_trades(self) -> Dict[str, VirtualTrade]:
+        pending_raw = await self.get_all_eval_pending()
+        out: Dict[str, VirtualTrade] = {}
+        for signal_id, data in pending_raw.items():
+            try:
+                out[signal_id] = VirtualTrade(**data)
+            except Exception:
+                continue
+        return out
+
+    async def set_eval_result(self, result: VirtualEvalResult) -> None:
+        payload = result.model_dump(mode="json")
+        await self.client.set(
+            f"eval:results:{result.signal_id}", json.dumps(payload)
+        )
+
+    async def get_eval_result(self, signal_id: str) -> Optional[VirtualEvalResult]:
+        raw = await self.client.get(f"eval:results:{signal_id}")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return VirtualEvalResult(**data)
+        except Exception:
+            return None
+
+    async def get_all_eval_results(self) -> List[VirtualEvalResult]:
+        out: List[VirtualEvalResult] = []
+        async for key in self.client.scan_iter("eval:results:*"):
+            raw = await self.client.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+                out.append(VirtualEvalResult(**data))
+            except Exception:
+                continue
+        return out
+
+    async def append_eval_history_entry(self, result: VirtualEvalResult) -> None:
+        key_global = "eval:history"
+        key_symbol = f"eval:history:{result.symbol}"
+        payload = result.model_dump(mode="json")
+        for key in (key_global, key_symbol):
+            raw = await self.client.get(key)
+            history = json.loads(raw) if raw else []
+            history.append(payload)
+            await self.client.set(key, json.dumps(history))
 
     # ------------- signal stats -------------
 

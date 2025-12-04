@@ -1,11 +1,20 @@
 import asyncio
-import aiohttp
-import time
-from typing import Dict, List, Optional
-from config import CONFIG
-from state.redis_state import RedisState
-from state.models import NormalizedBook
 import logging
+import time
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+
+import aiohttp
+
+from config import get_config
+from state.redis_state import RedisState
+from state.models import (
+    ExchangeHealth,
+    ExchangeStats,
+    NormalizedBook,
+    OrderBook,
+    OrderBookLevel,
+)
 
 logger = logging.getLogger("collectors.cex_collector")
 logger.setLevel(logging.INFO)
@@ -24,8 +33,9 @@ class CEXCollector:
 
     def __init__(self, redis_state: RedisState):
         self.redis = redis_state
-        self.symbols = CONFIG.symbols
-        self.exchanges = CONFIG.exchanges
+        self.cfg = get_config()
+        self.symbols = self.cfg.collectors.symbols
+        self.exchanges = self.cfg.collectors.cex_exchanges
 
         # exchange health data
         self.health = {
@@ -146,24 +156,27 @@ class CEXCollector:
         self.health[ex]["class"] = "fail"
 
     async def _update_exchange_stats(self):
-        stats = []
+        stats: List[ExchangeStats] = []
         for ex, info in self.health.items():
-            cls = "excellent"
             f = info["fails"]
             if f == 0:
-                cls = "excellent"
+                health = ExchangeHealth.excellent
             elif f <= 2:
-                cls = "warn"
+                health = ExchangeHealth.unstable
             else:
-                cls = "fail"
+                health = ExchangeHealth.offline
 
-            stats.append({
-                "name": ex,
-                "class": cls,
-                "latency_ms": info["latency"] or 0.0,
-                "error_rate": f,
-                "updated_at": time.time(),
-            })
+            stats.append(
+                ExchangeStats(
+                    name=ex,
+                    health=health,
+                    latency_ms=float(info["latency"] or 0.0),
+                    error_rate=float(f),
+                    timeout_rate=0.0,
+                    books_seen=0,
+                    updated_at=datetime.utcnow(),
+                )
+            )
 
         await self.redis.set_exchange_stats(stats)
 
@@ -172,34 +185,47 @@ class CEXCollector:
     # ---------------------------------------------------------
     async def _cycle(self):
         async with aiohttp.ClientSession() as session:
+            tasks: List[Tuple[str, asyncio.Future]] = []
 
-            # fetch all exchanges
-            tasks = []
             if "binance" in self.exchanges and not self.cb_open["binance"]:
-                tasks.append(self._fetch_binance_bulk(session))
+                tasks.append(("binance", asyncio.create_task(self._fetch_binance_bulk(session))))
 
             if "mexc" in self.exchanges and not self.cb_open["mexc"]:
-                tasks.append(self._fetch_mexc_bulk(session))
+                tasks.append(("mexc", asyncio.create_task(self._fetch_mexc_bulk(session))))
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(
+                *(t[1] for t in tasks), return_exceptions=True
+            )
 
-            merged_books = {}
+            merged_books: Dict[str, Dict[str, dict]] = {}
 
-            for res in results:
+            for (ex, _), res in zip(tasks, results):
+                if isinstance(res, Exception):
+                    logger.error("Collector task failed for %s: %s", ex, res)
+                    continue
                 if isinstance(res, dict):
                     for sym, book in res.items():
-                        if sym not in merged_books:
-                            merged_books[sym] = {}
-                        merged_books[sym].update({res: book})
+                        merged_books.setdefault(sym, {})[ex] = book
 
             # normalize + store
             for sym in self.symbols:
-                ex_books = {}
+                ex_books: Dict[str, dict] = {}
                 for ex in self.exchanges:
                     if sym in merged_books and ex in merged_books[sym]:
                         nb = self._normalize_book(merged_books[sym][ex])
                         if nb:
-                            ex_books[ex] = nb.model_dump()
+                            order_book = OrderBook(
+                                symbol=sym,
+                                exchange=ex,
+                                bids=[
+                                    OrderBookLevel(price=nb.bid, amount=nb.bid_size)
+                                ],
+                                asks=[
+                                    OrderBookLevel(price=nb.ask, amount=nb.ask_size)
+                                ],
+                                timestamp=datetime.utcnow(),
+                            )
+                            ex_books[ex] = order_book.model_dump(mode="json")
 
                 if ex_books:
                     await self.redis.set_books(sym, ex_books)
@@ -241,3 +267,8 @@ class CEXCollector:
                 logger.error(f"CEX collector error: {e}", exc_info=True)
 
             await asyncio.sleep(self._cycle_delay())
+
+
+async def run_cex_collector(redis_state: RedisState):
+    collector = CEXCollector(redis_state)
+    await collector.run()

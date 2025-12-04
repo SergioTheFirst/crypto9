@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime
 
 from config import get_config
@@ -35,8 +36,15 @@ class StatsEngine:
                 asks = book.get("asks") or []
                 if not bids or not asks:
                     continue
-                best_bid = bids[0]["price"]
-                best_ask = asks[0]["price"]
+                try:
+                    best_bid = float(bids[0]["price"])
+                    best_ask = float(asks[0]["price"])
+                except Exception:
+                    continue
+                if any(
+                    math.isnan(val) or val <= 0 for val in (best_bid, best_ask)
+                ):
+                    continue
                 mids.append((best_bid + best_ask) / 2.0)
             if not mids:
                 continue

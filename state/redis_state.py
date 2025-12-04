@@ -109,6 +109,33 @@ class RedisState:
         await self.client.set("state:signals", json.dumps(signals))
         await self.client.publish("streamhub:signals", json.dumps(signal.model_dump(mode="json")))
 
+    # ------------- eval buffers -------------
+
+    async def set_eval_pending(self, signal_id: str, payload: dict) -> None:
+        await self.client.set(f"eval:pending:{signal_id}", json.dumps(payload))
+
+    async def get_all_eval_pending(self) -> Dict[str, dict]:
+        out: Dict[str, dict] = {}
+        async for key in self.client.scan_iter("eval:pending:*"):
+            raw = await self.client.get(key)
+            if not raw:
+                continue
+            try:
+                out[key.split(":", 2)[2]] = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    async def delete_eval_pending(self, signal_id: str) -> None:
+        await self.client.delete(f"eval:pending:{signal_id}")
+
+    async def append_eval_history(self, signal_id: str, payload: dict) -> None:
+        key = f"eval:history:{signal_id}"
+        raw = await self.client.get(key)
+        history = json.loads(raw) if raw else []
+        history.append(payload)
+        await self.client.set(key, json.dumps(history))
+
     # ------------- signal stats -------------
 
     async def set_signal_stats(self, stats: SignalsAggregateStats) -> None:

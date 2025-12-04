@@ -62,6 +62,10 @@ class Signal(BaseModel):
     route: Route
     expected_profit_bps: float
     expected_profit_usd: float
+    spread_bps: float = 0.0
+    profit_usd: float = 0.0
+    volume_usd: float = 0.0
+    ts: datetime = Field(default_factory=datetime.utcnow)
     confidence: float = Field(..., ge=0.0, le=1.0)
     status: str = "new"
     severity: SignalSeverity = SignalSeverity.info

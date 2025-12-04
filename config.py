@@ -43,6 +43,8 @@ class EngineSettings(BaseModel):
     cooldown_sec: PositiveInt = 1800  # 30 min
     cycle_sec: PositiveInt = 2
     stats_interval: PositiveInt = 5
+    spread_threshold_bps: PositiveFloat = 50.0
+    max_book_age_sec: PositiveInt = 30
 
 
 # =========================================================
@@ -99,6 +101,12 @@ class Config(BaseModel):
     telegram: TelegramSettings = TelegramSettings()
     llm: LLMSettings = LLMSettings()
     api: APISettings = APISettings()
+    fees: dict = Field(
+        default_factory=lambda: {
+            "binance": {"taker": 0.0004, "withdraw": 0.0},
+            "mexc": {"taker": 0.001, "withdraw": 0.0},
+        }
+    )
 
 
 # =========================================================

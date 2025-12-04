@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 from typing import Optional, List
@@ -61,8 +59,7 @@ def create_app(redis_state: RedisState) -> FastAPI:
         min_profit_bps: Optional[float] = Query(None),
         symbol: Optional[str] = Query(None),
     ) -> SignalsResponse:
-        raw = await redis_state.get_signals()
-        items: List[Signal] = [Signal(**s) for s in raw]
+        items: List[Signal] = await redis_state.get_signals()
 
         if min_profit_bps is not None:
             items = [s for s in items if s.expected_profit_bps >= min_profit_bps]
@@ -95,11 +92,11 @@ def create_app(redis_state: RedisState) -> FastAPI:
         summaries = await redis_state.get_llm_summaries(limit=10)
         events = [
             Event(
-                id=s.get("id", ""),
-                kind=s.get("kind", "llm_summary"),
-                title=s.get("title", "LLM summary"),
-                text=s.get("text", ""),
-                created_at=s.get("created_at"),
+                id=s.id,
+                kind=s.kind,
+                title=s.title,
+                text=s.text,
+                created_at=s.created_at,
             )
             for s in summaries
         ]
@@ -108,8 +105,7 @@ def create_app(redis_state: RedisState) -> FastAPI:
     @app.get("/api/summaries", response_model=SummariesResponse)
     async def api_summaries() -> SummariesResponse:
         summaries = await redis_state.get_llm_summaries(limit=10)
-        items = [LLMSummary(**s) for s in summaries]
-        return SummariesResponse(events=items)
+        return SummariesResponse(events=summaries)
 
     @app.get("/ui/index.html")
     async def ui_index() -> FileResponse:

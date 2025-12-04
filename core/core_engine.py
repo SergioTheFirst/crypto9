@@ -5,7 +5,7 @@ import logging
 import math
 from datetime import datetime, timedelta
 from itertools import permutations
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from config import get_config
 from state.models import OrderBook, OrderBookLevel, Route, Signal, SignalSeverity
@@ -18,31 +18,27 @@ def _clean_levels(levels: List[OrderBookLevel]) -> List[OrderBookLevel]:
     cleaned: List[OrderBookLevel] = []
     for lvl in levels:
         if any(
-            math.isnan(val) or val <= 0.0
-            for val in (float(lvl.price), float(lvl.amount))
+            math.isnan(val) or val <= 0.0 for val in (float(lvl.price), float(lvl.amount))
         ):
             continue
         cleaned.append(lvl)
     return cleaned
 
 
-def _normalize_book(book: OrderBook, max_age: int) -> Optional[OrderBook]:
+def _normalize_book(book: OrderBook, max_age: int) -> OrderBook | None:
     if not book.bids or not book.asks:
         return None
 
-    book.bids = _clean_levels(book.bids)
-    book.asks = _clean_levels(book.asks)
+    bids = _clean_levels(book.bids)
+    asks = _clean_levels(book.asks)
 
-    if not book.bids or not book.asks:
+    if not bids or not asks:
         return None
 
-    best_bid = book.bids[0].price
-    best_ask = book.asks[0].price
+    best_bid = bids[0].price
+    best_ask = asks[0].price
 
-    if any(
-        math.isnan(val) or val <= 0.0
-        for val in (float(best_bid), float(best_ask))
-    ):
+    if any(math.isnan(val) or val <= 0.0 for val in (float(best_bid), float(best_ask))):
         return None
 
     if best_bid >= best_ask:
@@ -52,75 +48,54 @@ def _normalize_book(book: OrderBook, max_age: int) -> Optional[OrderBook]:
     if age > timedelta(seconds=max_age):
         return None
 
-    return book
+    return OrderBook(
+        symbol=book.symbol,
+        exchange=book.exchange,
+        bids=bids,
+        asks=asks,
+        timestamp=book.timestamp,
+    )
 
 
-def _compute_slippage(volume_usd: float) -> float:
-    return 0.5 * math.sqrt(max(volume_usd, 0.0) / 10_000.0)
+def _available_notional(buy_book: OrderBook, sell_book: OrderBook) -> float:
+    buy_level = buy_book.asks[0]
+    sell_level = sell_book.bids[0]
+    qty = min(buy_level.amount, sell_level.amount)
+    return float(qty * buy_level.price)
 
 
-def simulate_trade(
+def _slippage_bps(volume_usd: float) -> float:
+    # deterministic, volume-linked slippage in bps
+    return min(50.0, math.sqrt(max(volume_usd, 0.0)) / 25.0)
+
+
+def compute_route_profit(
     buy_book: OrderBook,
     sell_book: OrderBook,
     notional_usd: float,
     fee_buy: float,
     fee_sell: float,
-    withdraw_fee: float,
-) -> Tuple[float, float, float, float]:
+    withdraw_fee_usd: float,
+) -> Tuple[float, float, float]:
     if notional_usd <= 0:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
-    bids = sell_book.bids
-    asks = buy_book.asks
-    if not bids or not asks:
-        return 0.0, 0.0, 0.0, 0.0
+    buy_price = float(buy_book.asks[0].price)
+    sell_price = float(sell_book.bids[0].price)
+    qty = notional_usd / buy_price
 
-    remaining_notional = notional_usd
-    bought_qty = 0.0
-    spent_usd = 0.0
+    gross_revenue = qty * sell_price
+    gross_cost = notional_usd
 
-    for lvl in asks:
-        max_lvl_notional = lvl.price * lvl.amount
-        if max_lvl_notional >= remaining_notional:
-            qty = remaining_notional / lvl.price
-            bought_qty += qty
-            spent_usd += remaining_notional
-            remaining_notional = 0.0
-            break
-        bought_qty += lvl.amount
-        spent_usd += max_lvl_notional
-        remaining_notional -= max_lvl_notional
+    buy_fee = gross_cost * fee_buy
+    sell_fee = gross_revenue * fee_sell
+    slippage_cost = gross_cost * (_slippage_bps(notional_usd) / 10_000.0)
 
-    if bought_qty <= 0.0:
-        return 0.0, 0.0, 0.0, 0.0
+    profit_usd = gross_revenue - gross_cost - buy_fee - sell_fee - withdraw_fee_usd - slippage_cost
+    profit_bps = (profit_usd / gross_cost) * 10_000.0 if gross_cost else 0.0
+    spread_bps = ((sell_price - buy_price) / buy_price) * 10_000.0 if buy_price else 0.0
 
-    remaining_qty = bought_qty
-    received_usd = 0.0
-
-    for lvl in bids:
-        tradable_qty = min(remaining_qty, lvl.amount)
-        received_usd += tradable_qty * lvl.price
-        remaining_qty -= tradable_qty
-        if remaining_qty <= 0:
-            break
-
-    if remaining_qty > 0.0:
-        return 0.0, 0.0, 0.0, 0.0
-
-    avg_buy_price = spent_usd / bought_qty
-    avg_sell_price = received_usd / bought_qty if bought_qty else 0.0
-
-    buy_fee = spent_usd * fee_buy
-    sell_fee = received_usd * fee_sell
-    slippage = _compute_slippage(notional_usd)
-
-    gross = bought_qty * (avg_sell_price - avg_buy_price)
-    profit_usd = gross - buy_fee - sell_fee - withdraw_fee - slippage
-    profit_bps = (profit_usd / spent_usd) * 10_000.0 if spent_usd > 0 else 0.0
-
-    spread_bps = ((avg_sell_price - avg_buy_price) / avg_buy_price) * 10_000.0
-
-    return bought_qty, profit_usd, profit_bps, spread_bps
+    return profit_usd, profit_bps, spread_bps
 
 
 class CoreEngine:
@@ -130,17 +105,13 @@ class CoreEngine:
         self._stop = asyncio.Event()
 
     async def _compute_signals_for_symbol(self, symbol: str) -> List[Signal]:
-        books_raw = await self.redis_state.get_books(symbol)
-        if not books_raw:
+        books = await self.redis_state.get_books(symbol)
+        if not books:
             return []
 
         normalized: Dict[str, OrderBook] = {}
-        for ex, data in books_raw.items():
-            try:
-                ob = OrderBook(**data)
-            except Exception:
-                continue
-            normalized_book = _normalize_book(ob, self.cfg.engine.max_book_age_sec)
+        for ex, book in books.items():
+            normalized_book = _normalize_book(book, self.cfg.engine.max_book_age_sec)
             if normalized_book:
                 normalized[ex] = normalized_book
 
@@ -149,81 +120,70 @@ class CoreEngine:
             return []
 
         signals: List[Signal] = []
-        notional = float(self.cfg.engine.volume_cap_usd)
+        notional_cap = float(self.cfg.engine.volume_cap_usd)
+        min_volume = float(self.cfg.engine.min_volume_usd)
 
         for buy_ex, sell_ex in permutations(exchanges, 2):
-            if buy_ex == sell_ex:
-                continue
-
             buy_book = normalized[buy_ex]
             sell_book = normalized[sell_ex]
+
+            available_usd = _available_notional(buy_book, sell_book)
+            volume_usd = min(notional_cap, available_usd)
+            if volume_usd < min_volume:
+                continue
 
             fee_buy = self.cfg.fees.get(buy_ex, {}).get("taker", 0.001)
             fee_sell = self.cfg.fees.get(sell_ex, {}).get("taker", 0.001)
             withdraw_fee = self.cfg.fees.get(sell_ex, {}).get("withdraw", 0.0)
 
-            qty, profit_usd, profit_bps, spread_bps = simulate_trade(
+            profit_usd, profit_bps, spread_bps = compute_route_profit(
                 buy_book=buy_book,
                 sell_book=sell_book,
-                notional_usd=notional,
+                notional_usd=volume_usd,
                 fee_buy=fee_buy,
                 fee_sell=fee_sell,
-                withdraw_fee=withdraw_fee,
+                withdraw_fee_usd=withdraw_fee,
             )
 
-            if (
-                qty > 0
-                and profit_usd > 0
-                and profit_bps >= self.cfg.engine.min_profit_bps
-                and spread_bps >= self.cfg.engine.spread_threshold_bps
-                and notional >= self.cfg.engine.min_volume_usd
-            ):
-                severity = (
-                    SignalSeverity.critical
-                    if profit_bps >= self.cfg.telegram.profit_threshold_bps
-                    else SignalSeverity.elevated
-                )
-                route = Route(
-                    symbol=symbol,
-                    buy_exchange=buy_ex,
-                    sell_exchange=sell_ex,
-                    buy_price=buy_book.asks[0].price,
-                    sell_price=sell_book.bids[0].price,
-                    volume_usd=notional,
-                )
-                signal_id = f"{symbol}_{buy_ex}_{sell_ex}_{int(datetime.utcnow().timestamp())}"
-                signal = Signal(
-                    id=signal_id,
-                    symbol=symbol,
-                    route=route,
-                    expected_profit_bps=profit_bps,
-                    expected_profit_usd=profit_usd,
-                    spread_bps=spread_bps,
-                    profit_usd=profit_usd,
-                    volume_usd=notional,
-                    confidence=0.9,
-                    severity=severity,
-                    tags=["spread", "deterministic", "slippage"],
-                )
-                signals.append(signal)
+            if profit_usd <= 0:
+                continue
+            if profit_bps < self.cfg.engine.min_profit_bps:
+                continue
+            if spread_bps < self.cfg.engine.spread_threshold_bps:
+                continue
 
-                await self.redis_state.set_eval_pending(
-                    signal_id,
-                    {
-                        "symbol": symbol,
-                        "open_price": {
-                            "buy": route.buy_price,
-                            "sell": route.sell_price,
-                        },
-                        "predicted_profit": profit_usd,
-                        "exchanges": {
-                            "buy": buy_ex,
-                            "sell": sell_ex,
-                        },
-                        "volume_usd": notional,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    },
-                )
+            severity = (
+                SignalSeverity.critical
+                if profit_bps >= self.cfg.telegram.profit_threshold_bps
+                else SignalSeverity.elevated
+            )
+            tags = ["spread"]
+            if volume_usd > (notional_cap * 0.5):
+                tags.append("high_volume")
+
+            route = Route(
+                symbol=symbol,
+                buy_exchange=buy_ex,
+                sell_exchange=sell_ex,
+                buy_price=buy_book.asks[0].price,
+                sell_price=sell_book.bids[0].price,
+                volume_usd=volume_usd,
+            )
+            signal_id = f"{symbol}_{buy_ex}_{sell_ex}_{int(datetime.utcnow().timestamp())}"
+            signal = Signal(
+                id=signal_id,
+                symbol=symbol,
+                route=route,
+                expected_profit_bps=profit_bps,
+                expected_profit_usd=profit_usd,
+                spread_bps=spread_bps,
+                profit_usd=profit_usd,
+                volume_usd=volume_usd,
+                confidence=0.9,
+                severity=severity,
+                tags=tags,
+            )
+            signals.append(signal)
 
         return signals
 
@@ -234,6 +194,8 @@ class CoreEngine:
             all_signals.extend(sigs)
 
         await self.redis_state.set_signals(all_signals)
+        for sig in all_signals:
+            await self.redis_state.client.publish("streamhub:signals", sig.model_dump_json())
 
     async def run(self):
         logger.info("Core engine started")

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -10,6 +8,26 @@ from state.redis_state import RedisState
 from state.models import VirtualEvalResult, VirtualTrade
 
 logger = logging.getLogger(__name__)
+
+
+def _best_bid(book: Optional[object]) -> Optional[float]:
+    if not book or not getattr(book, "bids", None):
+        return None
+    level = book.bids[0]
+    try:
+        return float(level.price)
+    except Exception:
+        return None
+
+
+def _best_ask(book: Optional[object]) -> Optional[float]:
+    if not book or not getattr(book, "asks", None):
+        return None
+    level = book.asks[0]
+    try:
+        return float(level.price)
+    except Exception:
+        return None
 
 
 class EvalEngine:
@@ -24,10 +42,7 @@ class EvalEngine:
         ttl = int(hold_seconds * 2.5)
 
         for sig in signals:
-            signal_id = sig.get("id")
-            if not signal_id:
-                continue
-
+            signal_id = sig.id
             existing = await self.redis_state.get_eval_pending_trade(signal_id)
             if existing:
                 continue
@@ -36,72 +51,19 @@ class EvalEngine:
             if existing_result:
                 continue
 
-            route = sig.get("route", {}) or {}
-            symbol = sig.get("symbol") or route.get("symbol")
-            buy_exchange = route.get("buy_exchange") or route.get("buy")
-            sell_exchange = route.get("sell_exchange") or route.get("sell")
-            open_price_buy = float(route.get("buy_price", 0.0) or 0.0)
-            open_price_sell = float(route.get("sell_price", 0.0) or 0.0)
-            volume_usd = float(
-                sig.get("volume_usd")
-                or route.get("volume_usd")
-                or self.cfg.engine.volume_cap_usd
-            )
-            predicted_profit = float(sig.get("expected_profit_usd") or 0.0)
-
-            ts_raw: Optional[str] = None
-            for key in ("ts", "created_at"):
-                if sig.get(key):
-                    ts_raw = sig.get(key)
-                    break
-            try:
-                open_ts = (
-                    ts_raw if isinstance(ts_raw, datetime) else datetime.fromisoformat(ts_raw)
-                )
-            except Exception:
-                open_ts = datetime.utcnow()
-            if isinstance(open_ts, str):
-                open_ts = datetime.fromisoformat(open_ts)
-
-            if not (symbol and buy_exchange and sell_exchange and open_price_buy > 0):
-                continue
-
+            route = sig.route
             trade = VirtualTrade(
                 signal_id=signal_id,
-                symbol=symbol,
-                buy_exchange=buy_exchange,
-                sell_exchange=sell_exchange,
-                open_price_buy=open_price_buy,
-                open_price_sell=open_price_sell,
-                open_ts=open_ts,
-                volume_usd=volume_usd,
-                predicted_profit_usd=predicted_profit,
+                symbol=sig.symbol,
+                buy_exchange=route.buy_exchange,
+                sell_exchange=route.sell_exchange,
+                open_price_buy=route.buy_price,
+                open_price_sell=route.sell_price,
+                open_ts=sig.created_at,
+                volume_usd=sig.volume_usd or route.volume_usd,
+                predicted_profit_usd=sig.expected_profit_usd,
             )
             await self.redis_state.set_eval_pending_trade(trade, ttl_seconds=ttl)
-
-    @staticmethod
-    def _best_bid(book: dict) -> Optional[float]:
-        bids = book.get("bids") if isinstance(book, dict) else None
-        if not bids:
-            return None
-        level = bids[0]
-        if isinstance(level, dict):
-            return float(level.get("price", 0.0) or 0.0)
-        if isinstance(level, (list, tuple)) and level:
-            return float(level[0])
-        return None
-
-    @staticmethod
-    def _best_ask(book: dict) -> Optional[float]:
-        asks = book.get("asks") if isinstance(book, dict) else None
-        if not asks:
-            return None
-        level = asks[0]
-        if isinstance(level, dict):
-            return float(level.get("price", 0.0) or 0.0)
-        if isinstance(level, (list, tuple)) and level:
-            return float(level[0])
-        return None
 
     async def _evaluate_pending(self) -> None:
         pending = await self.redis_state.get_all_eval_pending_trades()
@@ -121,8 +83,8 @@ class EvalEngine:
             if not (buy_book and sell_book):
                 continue
 
-            close_sell_price = self._best_bid(buy_book)
-            close_buy_price = self._best_ask(sell_book)
+            close_sell_price = _best_bid(sell_book)
+            close_buy_price = _best_ask(buy_book)
             if not close_sell_price or not close_buy_price:
                 continue
 

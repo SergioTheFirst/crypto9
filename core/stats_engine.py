@@ -34,29 +34,22 @@ class StatsEngine:
                 continue
             mids = []
             updated_ts: list[datetime] = []
-            for ex, book in books.items():
-                bids = book.get("bids") or []
-                asks = book.get("asks") or []
+            for book in books.values():
+                bids = book.bids if book else []
+                asks = book.asks if book else []
                 if not bids or not asks:
                     continue
                 try:
-                    best_bid = float(bids[0]["price"])
-                    best_ask = float(asks[0]["price"])
+                    best_bid = float(bids[0].price)
+                    best_ask = float(asks[0].price)
                 except Exception:
                     continue
-                if any(
-                    math.isnan(val) or val <= 0 for val in (best_bid, best_ask)
-                ):
+                if any(math.isnan(val) or val <= 0 for val in (best_bid, best_ask)):
                     continue
                 mids.append((best_bid + best_ask) / 2.0)
-                ts_raw = book.get("timestamp") or book.get("ts")
-                try:
-                    if isinstance(ts_raw, datetime):
-                        updated_ts.append(ts_raw)
-                    elif ts_raw:
-                        updated_ts.append(datetime.fromisoformat(ts_raw))
-                except Exception:
-                    continue
+                ts_raw = book.timestamp
+                if isinstance(ts_raw, datetime):
+                    updated_ts.append(ts_raw)
             if not mids:
                 continue
             mid = sum(mids) / len(mids)
@@ -74,18 +67,10 @@ class StatsEngine:
         books = await self.redis_state.get_all_books()
         counts: dict[str, int] = {}
         newest_ts: dict[str, datetime] = {}
-        for symbol, exs in books.items():
+        for exs in books.values():
             for ex, book in exs.items():
                 counts[ex] = counts.get(ex, 0) + 1
-                ts_raw = book.get("timestamp") or book.get("ts")
-                ts_val: Optional[datetime] = None
-                if isinstance(ts_raw, datetime):
-                    ts_val = ts_raw
-                elif ts_raw:
-                    try:
-                        ts_val = datetime.fromisoformat(ts_raw)
-                    except Exception:
-                        ts_val = None
+                ts_val: Optional[datetime] = book.timestamp if isinstance(book.timestamp, datetime) else None
                 if ts_val:
                     prev = newest_ts.get(ex)
                     if not prev or ts_val > prev:
@@ -112,9 +97,7 @@ class StatsEngine:
         signals = await self.redis_state.get_signals()
         active = len(signals)
         avg_profit = (
-            sum(s.get("expected_profit_bps", 0.0) for s in signals) / active
-            if active
-            else 0.0
+            sum(s.expected_profit_bps for s in signals) / active if active else 0.0
         )
 
         eval_results = await self.redis_state.get_all_eval_results()
@@ -154,30 +137,26 @@ class StatsEngine:
             last_update_ts=datetime.utcnow(),
         )
         await self.redis_state.set_system_status(status)
-        # also publish to streamhub:system
-        await self.redis_state.client.publish(
-            "streamhub:system", status.model_dump_json()
-        )
+        await self.redis_state.client.publish("streamhub:system", status.model_dump_json())
 
-    async def _tick(self):
+    async def _cycle(self):
         market_stats = await self._compute_market_stats()
-        ex_stats = await self._compute_exchange_stats()
-        sig_stats = await self._compute_signal_stats()
+        exchange_stats = await self._compute_exchange_stats()
+        signal_stats = await self._compute_signal_stats()
 
         await self.redis_state.set_market_stats(market_stats)
-        await self.redis_state.set_exchange_stats(ex_stats)
-        await self.redis_state.set_signal_stats(sig_stats)
-        await self._update_system_status(market_stats, ex_stats)
+        await self.redis_state.set_exchange_stats(exchange_stats)
+        await self.redis_state.set_signal_stats(signal_stats)
+        await self._update_system_status(market_stats, exchange_stats)
 
     async def run(self):
         logger.info("Stats engine started")
-        interval = self.cfg.engine.stats_interval
         while not self._stop.is_set():
             try:
-                await self._tick()
+                await self._cycle()
             except Exception as e:
                 logger.exception("Stats engine error: %s", e)
-            await asyncio.sleep(interval)
+            await asyncio.sleep(self.cfg.stats.cycle_sec)
 
     def stop(self):
         self._stop.set()

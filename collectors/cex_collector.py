@@ -9,7 +9,7 @@ from aiohttp import ClientError, ClientTimeout
 
 from config import get_config
 from state.redis_state import RedisState
-from state.models import ExchangeHealth, ExchangeStats, NormalizedBook
+from state.models import ExchangeHealth, ExchangeStats, NormalizedBook, OrderBook, OrderBookLevel
 
 logger = logging.getLogger("collectors.cex_collector")
 logger.setLevel(logging.INFO)
@@ -38,7 +38,7 @@ class CEXCollector:
                 "ok": True,
                 "fails": 0,
                 "latency": None,
-                "class": "excellent"
+                "class": "excellent",
             }
             for ex in self.exchanges
         }
@@ -55,7 +55,7 @@ class CEXCollector:
     # ---------------------------------------------------------
     # Bulk fetchers
     # ---------------------------------------------------------
-    async def _fetch_binance_bulk(self, session) -> Optional[Dict[str, NormalizedBook]]:
+    async def _fetch_binance_bulk(self, session) -> Optional[Dict[str, OrderBook]]:
         return await self._fetch_with_retry(
             session,
             "binance",
@@ -66,7 +66,7 @@ class CEXCollector:
             ask_size_key="askQty",
         )
 
-    async def _fetch_mexc_bulk(self, session) -> Optional[Dict[str, NormalizedBook]]:
+    async def _fetch_mexc_bulk(self, session) -> Optional[Dict[str, OrderBook]]:
         return await self._fetch_with_retry(
             session,
             "mexc",
@@ -87,7 +87,7 @@ class CEXCollector:
         ask_key: str,
         bid_size_key: str,
         ask_size_key: str,
-    ) -> Optional[Dict[str, NormalizedBook]]:
+    ) -> Optional[Dict[str, OrderBook]]:
         if self._is_circuit_open(exchange):
             return None
 
@@ -135,8 +135,8 @@ class CEXCollector:
         ask_key: str,
         bid_size_key: str,
         ask_size_key: str,
-    ) -> Dict[str, NormalizedBook]:
-        out: Dict[str, NormalizedBook] = {}
+    ) -> Dict[str, OrderBook]:
+        out: Dict[str, OrderBook] = {}
         for item in data:
             sym = item.get("symbol")
             if not sym or sym not in self.symbols:
@@ -151,8 +151,17 @@ class CEXCollector:
                 },
             )
             if normalized:
-                out[sym] = normalized
+                out[sym] = self._normalized_to_orderbook(sym, normalized)
         return out
+
+    def _normalized_to_orderbook(self, symbol: str, book: NormalizedBook) -> OrderBook:
+        return OrderBook(
+            symbol=symbol,
+            exchange=book.exchange,
+            bids=[OrderBookLevel(price=book.bid, amount=book.bid_size)],
+            asks=[OrderBookLevel(price=book.ask, amount=book.ask_size)],
+            timestamp=book.ts,
+        )
 
     # ---------------------------------------------------------
     # Normalization (v8-level)
@@ -250,7 +259,7 @@ class CEXCollector:
                 *(t[1] for t in tasks), return_exceptions=True
             )
 
-            merged_books: Dict[str, Dict[str, NormalizedBook]] = {}
+            merged_books: Dict[str, Dict[str, OrderBook]] = {}
 
             for (ex, _), res in zip(tasks, results):
                 if isinstance(res, Exception):
@@ -265,12 +274,12 @@ class CEXCollector:
 
             # store normalized books per symbol preserving exchange order
             for sym in self.symbols:
-                ex_books: Dict[str, dict] = {}
                 sym_books = merged_books.get(sym, {})
+                ex_books: Dict[str, OrderBook] = {}
                 for ex in self.exchanges:
                     book = sym_books.get(ex)
                     if book:
-                        ex_books[ex] = book.model_dump(mode="json")
+                        ex_books[ex] = book
 
                 if ex_books:
                     await self.redis.set_books(sym, ex_books)

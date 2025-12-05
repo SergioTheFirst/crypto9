@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 from typing import List
 
+from analytics.history_store import HistoryStore
 from state.redis_state import RedisState
 from state.models import MarketStats, ExchangeStats, SystemStatus
 
@@ -13,18 +14,19 @@ async def run_stats_engine(redis: RedisState, cfg):
     log.info("Stats engine started")
 
     interval = cfg.engine.cycle_stats_sec
+    history = HistoryStore(redis, cfg)
 
     while True:
         try:
-            await _cycle(redis, cfg)
+            await _cycle(redis, cfg, history)
         except Exception as e:
             log.error(f"Stats engine error: {e}")
 
         await asyncio.sleep(interval)
 
 
-async def _cycle(redis: RedisState, cfg):
-    market = await _calc_market_stats(redis, cfg)
+async def _cycle(redis: RedisState, cfg, history: HistoryStore):
+    market = await _calc_market_stats(redis, cfg, history)
     exch = await _calc_exchange_stats(redis, cfg)
 
     await redis.set_market_stats(market)
@@ -44,7 +46,7 @@ async def _cycle(redis: RedisState, cfg):
     await redis.set_system_status(sys)
 
 
-async def _calc_market_stats(redis: RedisState, cfg) -> List[MarketStats]:
+async def _calc_market_stats(redis: RedisState, cfg, history: HistoryStore) -> List[MarketStats]:
     result = []
 
     for symbol in cfg.collector.symbols:
@@ -54,6 +56,25 @@ async def _calc_market_stats(redis: RedisState, cfg) -> List[MarketStats]:
 
         mids = [(b.bid + b.ask) / 2 for b in books.values()]
         mid = sum(mids) / len(mids)
+
+        try:
+            best_ask = min(books.values(), key=lambda b: b.ask)
+            best_bid = max(books.values(), key=lambda b: b.bid)
+            spread = best_bid.bid - best_ask.ask
+            spread_bps = (spread / mid) * 10_000 if mid else 0.0
+            await history.append_spread(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "spread": spread,
+                    "spread_bps": spread_bps,
+                    "best_bid": best_bid.bid,
+                    "best_ask": best_ask.ask,
+                    "updated_at": datetime.utcnow(),
+                },
+            )
+        except Exception:
+            pass
 
         result.append(
             MarketStats(

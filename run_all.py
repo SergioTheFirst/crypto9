@@ -8,6 +8,7 @@ from collectors.cex_collector import run_cex_collector
 from collectors.dex_collector import run_dex_collector
 from config import CONFIG
 from core.core_engine import run_core_engine
+from core.param_tuner import run_param_tuner
 from core.eval_engine import run_eval_engine
 from core.stats_engine import run_stats_engine
 from state.redis_state import RedisState
@@ -29,6 +30,7 @@ async def main():
         asyncio.create_task(run_core_engine(redis, CONFIG)),
         asyncio.create_task(run_eval_engine(redis, CONFIG)),
         asyncio.create_task(run_stats_engine(redis, CONFIG)),
+        asyncio.create_task(run_param_tuner(redis, CONFIG)),
         asyncio.create_task(api.serve()),
     ]
 

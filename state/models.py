@@ -68,9 +68,13 @@ class CoreSignal(BaseModel):
     sell_price: float
     volume_usd: float
     spread: float
+    spread_bps: float | None = None
     fee_rate: float
     slippage_rate: float
     net_profit: float
+    net_profit_bps: float | None = None
+    ml_score: float | None = None
+    cluster_id: int | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -89,3 +93,22 @@ class LLMSummary(BaseModel):
     kind: str = Field(default="llm_summary")
     text: str
     created_at: datetime
+
+
+class ParamSnapshot(BaseModel):
+    min_net_profit_usd: float
+    min_spread_bps: float
+    min_volume_usd: float
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SignalCluster(BaseModel):
+    cluster_id: int
+    size: int
+    centroid: Dict[str, float]
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ClusterState(BaseModel):
+    clusters: list[SignalCluster]
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

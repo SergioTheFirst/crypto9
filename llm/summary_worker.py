@@ -1,46 +1,36 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 from datetime import datetime
 
-from config import get_config
-from state.models import LLMSummary
+from config import CONFIG, Config
 from state.redis_state import RedisState
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("llm.summary_worker")
 
 
-class SummaryWorker:
-    def __init__(self, redis_state: RedisState):
-        self.cfg = get_config()
-        self.redis_state = redis_state
-        self._stop = asyncio.Event()
+async def _generate_summary() -> str:
+    """
+    Заглушка LLM. Настоящий вызов будет потом.
+    """
+    now = datetime.utcnow().isoformat()
+    return f"[LLM SUMMARY]\nSystem heartbeat at {now}"
 
-    async def _generate_summary(self):
-        # Very simple stub: just count signals
-        signals = await self.redis_state.get_signals()
-        text = f"Summary at {datetime.utcnow().isoformat()}: {len(signals)} active signals."
-        summary = LLMSummary(
-            id=f"llm_{int(datetime.utcnow().timestamp())}",
-            title="Market Summary",
-            text=text,
-        )
-        await self.redis_state.add_llm_summary(summary)
-        logger.info("Stored LLM summary %s", summary.id)
 
-    async def run(self):
-        if not self.cfg.llm.enabled:
-            logger.info("LLM worker disabled.")
-            return
+async def run_llm_worker(redis: RedisState, cfg: Config = CONFIG) -> None:
+    if not cfg.llm.enabled:
+        logger.info("LLM worker disabled.")
+        return
 
-        logger.info("LLM summary worker started")
-        while not self._stop.is_set():
-            try:
-                await self._generate_summary()
-            except Exception as e:
-                logger.exception("LLM worker error: %s", e)
-            await asyncio.sleep(self.cfg.llm.summary_interval_minutes * 60)
+    logger.info("LLM worker started.")
 
-    def stop(self):
-        self._stop.set()
+    while True:
+        try:
+            text = await _generate_summary()
+
+            await redis.set_system_status({"status": "ok", "summary": text})
+
+            await asyncio.sleep(cfg.llm.cycle_sec)
+
+        except Exception as exc:
+            logger.exception("LLM worker error: %s", exc)
+            await asyncio.sleep(5)

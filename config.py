@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # -----------------------------
@@ -22,8 +22,8 @@ class APIConfig(BaseModel):
 # COLLECTORS CONFIG
 # -----------------------------
 class CollectorConfig(BaseModel):
-    symbols: list[str] = ["BTCUSDT", "ETHUSDT"]
-    exchanges: list[str] = ["binance", "mexc"]
+    symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
+    exchanges: list[str] = Field(default_factory=lambda: ["binance", "mexc"])
     cycle_sec: float = 1.0
     use_dex: bool = False
 
@@ -35,6 +35,9 @@ class EngineConfig(BaseModel):
     cycle_core_sec: float = 1.0
     cycle_eval_sec: float = 3.0
     cycle_stats_sec: float = 2.0
+    fee_rate: float = 0.001
+    slippage_rate: float = 0.0005
+    trade_volume_usd: float = 100.0
 
 
 # -----------------------------

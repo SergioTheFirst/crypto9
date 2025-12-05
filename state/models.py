@@ -1,7 +1,8 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
-from typing import Dict, Optional
 from datetime import datetime
+from typing import Dict
+
+from pydantic import BaseModel, Field
 
 
 # ============================
@@ -66,8 +67,11 @@ class CoreSignal(BaseModel):
     buy_price: float
     sell_price: float
     volume_usd: float
-    est_net_profit: float
-    created_at: datetime
+    spread: float
+    fee_rate: float
+    slippage_rate: float
+    net_profit: float
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class SignalStats(BaseModel):

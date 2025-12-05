@@ -1,5 +1,8 @@
 import json
+from datetime import datetime
 from typing import Dict, List, Optional
+
+from pydantic import BaseModel
 from redis.asyncio import Redis
 
 from state.models import (
@@ -13,13 +16,15 @@ from state.models import (
 
 
 def _encode(obj):
-    """Убираем datetime → строка ISO"""
-    if hasattr(obj, "model_dump"):
-        d = obj.model_dump()
-        for k, v in d.items():
-            if hasattr(v, "isoformat"):
-                d[k] = v.isoformat()
-        return d
+    """Recursively transform datetimes and Pydantic models into JSON-safe structures."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, BaseModel):
+        obj = obj.model_dump()
+    if isinstance(obj, dict):
+        return {k: _encode(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_encode(v) for v in obj]
     return obj
 
 
@@ -48,7 +53,7 @@ class RedisState:
     async def set_market_stats(self, stats: List[MarketStats]):
         await self.client.set(
             "state:market_stats",
-            json.dumps([_encode(s) for s in stats])
+            json.dumps(_encode(stats)),
         )
 
     async def get_market_stats(self) -> List[MarketStats]:
@@ -63,7 +68,7 @@ class RedisState:
     async def set_exchange_stats(self, stats: List[ExchangeStats]):
         await self.client.set(
             "state:exchange_stats",
-            json.dumps([_encode(s) for s in stats])
+            json.dumps(_encode(stats)),
         )
 
     async def get_exchange_stats(self) -> List[ExchangeStats]:
@@ -78,7 +83,7 @@ class RedisState:
     async def set_system_status(self, status: SystemStatus):
         await self.client.set(
             "state:system_status",
-            json.dumps(_encode(status))
+            json.dumps(_encode(status)),
         )
 
     async def get_system_status(self) -> Optional[SystemStatus]:
@@ -93,7 +98,7 @@ class RedisState:
     async def push_signal(self, signal: CoreSignal):
         await self.client.lpush(
             "state:signals",
-            json.dumps(_encode(signal))
+            json.dumps(_encode(signal)),
         )
         await self.client.ltrim("state:signals", 0, 199)
 
@@ -107,7 +112,7 @@ class RedisState:
     async def set_signal_stats(self, stats: SignalStats):
         await self.client.set(
             "state:signal_stats",
-            json.dumps(_encode(stats))
+            json.dumps(_encode(stats)),
         )
 
     async def get_signal_stats(self) -> Optional[SignalStats]:

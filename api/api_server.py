@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
 from state.redis_state import RedisState
@@ -21,18 +22,18 @@ def create_app(cfg):
         s = await redis.get_system_status()
         if not s:
             return {"status": "init"}
-        return s.model_dump()
+        return jsonable_encoder(s)
 
     @app.get("/api/market")
     async def get_market():
         m = await redis.get_market_stats()
         if not m:
             return {"detail": "Market stats not available"}
-        return [x.model_dump() for x in m]
+        return jsonable_encoder(m)
 
     @app.get("/api/signals")
     async def get_signals():
         sigs = await redis.get_signals()
-        return [s.model_dump() for s in sigs]
+        return jsonable_encoder(sigs)
 
     return app

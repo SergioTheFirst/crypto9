@@ -16,25 +16,20 @@ async def run_stats_engine(redis: RedisState, cfg):
 
     while True:
         try:
-            await _cycle(redis)
+            await _cycle(redis, cfg)
         except Exception as e:
             log.error(f"Stats engine error: {e}")
 
         await asyncio.sleep(interval)
 
 
-async def _cycle(redis: RedisState):
-    # MARKET
-    market = await _calc_market_stats(redis)
+async def _cycle(redis: RedisState, cfg):
+    market = await _calc_market_stats(redis, cfg)
+    exch = await _calc_exchange_stats(redis, cfg)
 
-    # EXCHANGES
-    exch = await _calc_exchange_stats(redis)
-
-    # SAVE market
     await redis.set_market_stats(market)
     await redis.set_exchange_stats(exch)
 
-    # SYSTEM STATUS
     sys = SystemStatus(
         status="ok",
         redis="ok",
@@ -43,16 +38,16 @@ async def _cycle(redis: RedisState):
         dex="disabled",
         symbols=len(market),
         exchanges={e.exchange: e for e in exch},
-        last_update_ts=datetime.utcnow().isoformat(),
+        last_update_ts=datetime.utcnow(),
     )
 
     await redis.set_system_status(sys)
 
 
-async def _calc_market_stats(redis: RedisState) -> List[MarketStats]:
+async def _calc_market_stats(redis: RedisState, cfg) -> List[MarketStats]:
     result = []
 
-    for symbol in ["BTCUSDT", "ETHUSDT"]:
+    for symbol in cfg.collector.symbols:
         books = await redis.get_books(symbol)
         if not books:
             continue
@@ -72,22 +67,18 @@ async def _calc_market_stats(redis: RedisState) -> List[MarketStats]:
     return result
 
 
-async def _calc_exchange_stats(redis: RedisState) -> List[ExchangeStats]:
+async def _calc_exchange_stats(redis: RedisState, cfg) -> List[ExchangeStats]:
     now = datetime.utcnow()
+    reference_books = await redis.get_books(cfg.collector.symbols[0]) if cfg.collector.symbols else {}
+    status = "excellent" if reference_books else "warming_up"
 
     return [
         ExchangeStats(
-            exchange="binance",
-            status="excellent",
-            delay_ms=12,
+            exchange=ex,
+            status=status,
+            delay_ms=10.0,
             error_rate=0.0,
             updated_at=now,
-        ),
-        ExchangeStats(
-            exchange="mexc",
-            status="excellent",
-            delay_ms=14,
-            error_rate=0.0,
-            updated_at=now,
-        ),
+        )
+        for ex in cfg.collector.exchanges
     ]

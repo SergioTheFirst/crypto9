@@ -12,6 +12,8 @@ from state.models import (
     SignalStats,
     SystemStatus,
     CoreSignal,
+    ParamSnapshot,
+    ClusterState,
 )
 
 
@@ -120,3 +122,30 @@ class RedisState:
         if not raw:
             return None
         return SignalStats(**json.loads(raw))
+
+    # --------------------------------------
+    # PARAM TUNER SNAPSHOT
+    # --------------------------------------
+    async def set_param_snapshot(self, snap: ParamSnapshot):
+        await self.client.set(
+            "state:param_tuner",
+            json.dumps(_encode(snap)),
+        )
+
+    async def get_param_snapshot(self) -> Optional[ParamSnapshot]:
+        raw = await self.client.get("state:param_tuner")
+        if not raw:
+            return None
+        return ParamSnapshot(**json.loads(raw))
+
+    # --------------------------------------
+    # CLUSTERS
+    # --------------------------------------
+    async def set_cluster_state(self, clusters: ClusterState):
+        await self.client.set("state:clusters:signals", json.dumps(_encode(clusters)))
+
+    async def get_cluster_state(self) -> Optional[ClusterState]:
+        raw = await self.client.get("state:clusters:signals")
+        if not raw:
+            return None
+        return ClusterState(**json.loads(raw))

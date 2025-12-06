@@ -29,8 +29,7 @@ echo     Waiting for Redis...
 
 REM Wait until port 6379 is open
 :wait_redis
-powershell -command ^
-"try { (New-Object Net.Sockets.TcpClient('127.0.0.1',6379)).Close(); exit 0 } catch { exit 1 }"
+powershell -command "try { (New-Object Net.Sockets.TcpClient('127.0.0.1',6379)).Close(); exit 0 } catch { exit 1 }"
 
 if %errorlevel% neq 0 (
     ping 127.0.0.1 -n 2 >nul
@@ -50,15 +49,18 @@ cd /d C:\pro\crypto\crypto9
 REM Clear screen separation
 echo ----------------------------------------------------
 
-REM Start backend directly inside console (no second window)
+REM Start backend directly inside console (no secondary window)
 python run_all.py
 
 echo ----------------------------------------------------
+echo [4] Backend SHUTDOWN.
 echo.
-echo ===========================================
-echo   Premium v9 stopped.
-echo ===========================================
-echo.
+echo Press any key to kill Redis and exit...
+pause >nul
 
-pause
-exit
+REM ---------------------------------------------------
+REM 4. Cleanup
+REM ---------------------------------------------------
+taskkill /F /IM redis-server.exe >nul 2>&1
+
+endlocal

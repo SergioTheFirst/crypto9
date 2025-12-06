@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 # ============================
 
 class NormalizedBook(BaseModel):
+    symbol: str
     bid: float
     ask: float
     bid_size: float
@@ -94,6 +95,9 @@ class LLMSummary(BaseModel):
     text: str
     created_at: datetime
 
+# ============================
+#  PARAM TUNER
+# ============================
 
 class ParamSnapshot(BaseModel):
     min_net_profit_usd: float
@@ -101,14 +105,25 @@ class ParamSnapshot(BaseModel):
     min_volume_usd: float
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
+# ============================
+#  CLUSTERING
+# ============================
 
 class SignalCluster(BaseModel):
     cluster_id: int
     size: int
     centroid: Dict[str, float]
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-
 
 class ClusterState(BaseModel):
-    clusters: list[SignalCluster]
+    clusters: List["SignalCluster"]
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+# ============================
+#  EVENT
+# ============================
+
+class Event(BaseModel):
+    kind: str
+    title: str
+    text: str
+    created_at: datetime

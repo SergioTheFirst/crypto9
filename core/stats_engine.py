@@ -1,11 +1,11 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
 from analytics.history_store import HistoryStore
 from state.redis_state import RedisState
-from state.models import MarketStats, ExchangeStats, SystemStatus
+from state.models import MarketStats, ExchangeStats, SystemStatus, NormalizedBook
 
 log = logging.getLogger("core.stats_engine")
 
@@ -48,13 +48,15 @@ async def _cycle(redis: RedisState, cfg, history: HistoryStore):
 
 async def _calc_market_stats(redis: RedisState, cfg, history: HistoryStore) -> List[MarketStats]:
     result = []
-
     for symbol in cfg.collector.symbols:
-        books = await redis.get_books(symbol)
+        books: Dict[str, NormalizedBook] = await redis.get_books(symbol)
         if not books:
             continue
 
-        mids = [(b.bid + b.ask) / 2 for b in books.values()]
+        mids = [(b.ask + b.bid) / 2 for b in books.values()]
+        if not mids:
+            continue
+
         mid = sum(mids) / len(mids)
 
         try:
@@ -62,6 +64,7 @@ async def _calc_market_stats(redis: RedisState, cfg, history: HistoryStore) -> L
             best_bid = max(books.values(), key=lambda b: b.bid)
             spread = best_bid.bid - best_ask.ask
             spread_bps = (spread / mid) * 10_000 if mid else 0.0
+            
             await history.append_spread(
                 symbol,
                 {
@@ -90,16 +93,27 @@ async def _calc_market_stats(redis: RedisState, cfg, history: HistoryStore) -> L
 
 async def _calc_exchange_stats(redis: RedisState, cfg) -> List[ExchangeStats]:
     now = datetime.utcnow()
-    reference_books = await redis.get_books(cfg.collector.symbols[0]) if cfg.collector.symbols else {}
-    status = "excellent" if reference_books else "warming_up"
-
-    return [
-        ExchangeStats(
-            exchange=ex,
-            status=status,
-            delay_ms=10.0,
-            error_rate=0.0,
-            updated_at=now,
+    reference_books: Dict[str, NormalizedBook] = await redis.get_books(cfg.collector.symbols[0]) if cfg.collector.symbols else {}
+    
+    all_exchanges = cfg.collector.cex_exchanges 
+    
+    stats_list = []
+    
+    for ex in all_exchanges:
+        book_available = ex in reference_books
+        
+        status = "excellent" if book_available else "warming_up"
+        delay_ms = 0.0
+        error_rate = 0.0
+        
+        stats_list.append(
+            ExchangeStats(
+                exchange=ex,
+                status=status,
+                delay_ms=delay_ms,
+                error_rate=error_rate,
+                updated_at=now,
+            )
         )
-        for ex in cfg.collector.exchanges
-    ]
+        
+    return stats_list

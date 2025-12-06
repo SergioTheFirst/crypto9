@@ -5,3 +5,6 @@ aiohttp
 pydantic>=2.0
 pydantic-settings
 sse-starlette
+httpx
+scikit-learn
+numpy

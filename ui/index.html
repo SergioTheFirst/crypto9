@@ -2,11 +2,132 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Crypto Intel Premium v9</title>
+  <title>Crypto Intel Premium v9 Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="/static/premium.css" />
 </head>
 <body>
-  <h1>Crypto Intel Premium v9</h1>
-  <p>Backend is running. Implement full Premium dashboard UI later.</p>
-  <p>Try: <a href="/api/status">/api/status</a></p>
+  <div class="app-root">
+    <!-- TOP BAR -->
+    <header class="top-bar">
+      <div class="brand">
+        <span class="brand-badge">PREMIUM</span>
+        <span class="brand-title">Crypto Intel v9</span>
+      </div>
+      <div class="top-bar-right">
+        <div class="status-pill" id="global-status-pill">
+          <span class="status-dot" id="global-status-dot"></span>
+          <span id="global-status-text">INIT</span>
+        </div>
+        <div class="meta">
+          <span id="last-update-label">Last update: —</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN GRID -->
+    <main class="grid-main">
+      <!-- LEFT COLUMN -->
+      <section class="column column-left">
+        <!-- SYSTEM SUMMARY -->
+        <div class="card card-wide">
+          <div class="card-header">
+            <h2>System overview</h2>
+          </div>
+          <div class="card-body summary-grid">
+            <div class="summary-item">
+              <div class="summary-label">Status</div>
+              <div class="summary-value" id="sys-status-value">—</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Symbols</div>
+              <div class="summary-value" id="sys-symbols-value">0</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Exchanges</div>
+              <div class="summary-value" id="sys-exchanges-value">0</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Redis</div>
+              <div class="summary-value" id="sys-redis-value">—</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">LLM</div>
+              <div class="summary-value" id="sys-llm-value">—</div>
+            </div>
+            <div class="summary-item">
+              <div class="summary-label">Telegram</div>
+              <div class="summary-value" id="sys-tg-value">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- EXCHANGES -->
+        <div class="card card-tall">
+          <div class="card-header">
+            <h2>Exchanges health</h2>
+          </div>
+          <div class="card-body">
+            <div class="table-wrapper">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Exchange</th>
+                    <th>Status</th>
+                    <th>Delay (ms)</th>
+                    <th>Error rate</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="exchanges-table-body">
+                  <!-- filled by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN -->
+      <section class="column column-right">
+        <!-- MARKET -->
+        <div class="card card-medium">
+          <div class="card-header">
+            <h2>Market snapshot</h2>
+          </div>
+          <div class="card-body">
+            <div class="table-wrapper">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Last mid</th>
+                    <th>Volatility 1h</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="market-table-body">
+                  <!-- filled by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- SIGNALS -->
+        <div class="card card-tall">
+          <div class="card-header">
+            <h2>Signals (last 20)</h2>
+            <span class="badge" id="signals-count-badge">0</span>
+          </div>
+          <div class="card-body signals-list" id="signals-list">
+            <!-- signal cards by JS -->
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/dashboard.js"></script>
 </body>
 </html>

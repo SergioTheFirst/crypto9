@@ -21,6 +21,7 @@ def _encode(obj):
     """Recursively transform datetimes and Pydantic models into JSON-safe structures."""
     if isinstance(obj, datetime):
         return obj.isoformat()
+    # Note: model_dump is used for Pydantic v2
     if isinstance(obj, BaseModel):
         obj = obj.model_dump()
     if isinstance(obj, dict):
@@ -47,37 +48,43 @@ class RedisState:
         if not raw:
             return {}
         data = json.loads(raw)
-        return {ex: NormalizedBook(**b) for ex, b in data.items()}
+        return {k: NormalizedBook(**v) for k, v in data.items()}
+
+    async def set_book(self, symbol: str, exchange: str, book: NormalizedBook):
+        key = f"state:books:{symbol}"
+        # Fetch, update, and set back to maintain atomic update of the whole book set
+        raw = await self.client.get(key)
+        data = json.loads(raw) if raw else {}
+        data[exchange] = _encode(book)
+        await self.client.set(key, json.dumps(data))
 
     # --------------------------------------
     # MARKET STATS
     # --------------------------------------
     async def set_market_stats(self, stats: List[MarketStats]):
-        await self.client.set(
-            "state:market_stats",
-            json.dumps(_encode(stats)),
-        )
+        dumped = {_s.symbol: _encode(_s) for _s in stats}
+        await self.client.set("state:market_stats", json.dumps(dumped))
 
-    async def get_market_stats(self) -> List[MarketStats]:
+    async def get_market_stats(self) -> Optional[Dict[str, MarketStats]]:
         raw = await self.client.get("state:market_stats")
         if not raw:
-            return []
-        return [MarketStats(**item) for item in json.loads(raw)]
+            return None
+        data = json.loads(raw)
+        return {k: MarketStats(**v) for k, v in data.items()}
 
     # --------------------------------------
     # EXCHANGE STATS
     # --------------------------------------
     async def set_exchange_stats(self, stats: List[ExchangeStats]):
-        await self.client.set(
-            "state:exchange_stats",
-            json.dumps(_encode(stats)),
-        )
+        dumped = {_s.exchange: _encode(_s) for _s in stats}
+        await self.client.set("state:exchange_stats", json.dumps(dumped))
 
-    async def get_exchange_stats(self) -> List[ExchangeStats]:
+    async def get_exchange_stats(self) -> Optional[Dict[str, ExchangeStats]]:
         raw = await self.client.get("state:exchange_stats")
         if not raw:
-            return []
-        return [ExchangeStats(**s) for s in json.loads(raw)]
+            return None
+        data = json.loads(raw)
+        return {k: ExchangeStats(**v) for k, v in data.items()}
 
     # --------------------------------------
     # SYSTEM STATUS
@@ -95,18 +102,25 @@ class RedisState:
         return SystemStatus(**json.loads(raw))
 
     # --------------------------------------
-    # SIGNALS
+    # SIGNALS (НОВЫЕ/ИСПРАВЛЕННЫЕ МЕТОДЫ)
     # --------------------------------------
     async def push_signal(self, signal: CoreSignal):
-        await self.client.lpush(
-            "state:signals",
-            json.dumps(_encode(signal)),
-        )
-        await self.client.ltrim("state:signals", 0, 199)
+        # Сохраняем CoreSignal для движков оценки и API
+        await self.client.lpush("state:signals", json.dumps(_encode(signal)))
+        # Ограничиваем список, чтобы он не рос бесконечно
+        await self.client.ltrim("state:signals", 0, 1000)
 
-    async def get_signals(self) -> List[CoreSignal]:
-        raw_list = await self.client.lrange("state:signals", 0, 200)
-        return [CoreSignal(**json.loads(r)) for r in raw_list]
+    async def get_signals(self, limit: int = 1000) -> List[CoreSignal]:
+        raw = await self.client.lrange("state:signals", 0, limit - 1)
+        signals = []
+        for item in raw:
+            try:
+                # CoreSignal — внутренняя модель, используется eval_engine
+                signals.append(CoreSignal(**json.loads(item)))
+            except Exception:
+                # Игнорируем некорректные записи
+                continue
+        return signals
 
     # --------------------------------------
     # SIGNAL STATS

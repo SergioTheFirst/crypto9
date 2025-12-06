@@ -1,102 +1,149 @@
 from pydantic import BaseModel, Field
+from typing import List
 
 
-# -----------------------------
-# REDIS CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# REDIS
+# ----------------------------------------------------
 class RedisConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 6379
     db: int = 0
 
 
-# -----------------------------
-# API CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# API
+# ----------------------------------------------------
 class APIConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
+    debug: bool = False
+    # НОВОЕ: Интервал обновления статуса для SSE-стрима
+    status_stream_interval_sec: float = Field(default=1.0, description="Interval for system status SSE stream.")
 
 
-# -----------------------------
-# COLLECTORS CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# COLLECTOR
+# ----------------------------------------------------
 class CollectorConfig(BaseModel):
-    symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
-    exchanges: list[str] = Field(default_factory=lambda: ["binance", "mexc"])
-    cycle_sec: float = 1.0
+    use_cex: bool = True
     use_dex: bool = False
+    cycle_sec: float = 1.0
+
+    symbols: List[str] = ["BTCUSDT", "ETHUSDT"]
+    cex_exchanges: List[str] = ["binance", "mexc"]
 
 
-# -----------------------------
-# ENGINE CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# ENGINE
+# ----------------------------------------------------
 class EngineConfig(BaseModel):
-    cycle_core_sec: float = 1.0
-    cycle_eval_sec: float = 3.0
-    cycle_stats_sec: float = 2.0
-    fee_rate: float = 0.001
-    slippage_rate: float = 0.0005
-    trade_volume_usd: float = 100.0
-    min_net_profit_usd: float = 0.0
-    min_spread_bps: float = 0.0
-    min_volume_usd: float = 0.0
+    cycle_core_sec: float = 1.5
+    cycle_eval_sec: float = 5.0
+    cycle_stats_sec: float = 3.0
+
+    min_spread_usd: float = 0.50
+    min_volume_usd: float = 100.0
+    
+    # НОВОЕ: Объемы и ставки для расчета профита
+    volume_calc_usd: float = Field(default=500.0, description="Volume used for profit calculation.")
+    default_fee_rate: float = Field(default=0.00075, description="Default maker/taker fee rate (e.g., 0.075%).")
+    default_slippage_rate: float = Field(default=0.0001, description="Default slippage percentage for a trade.")
 
 
-# -----------------------------
-# ML CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# EVAL
+# ----------------------------------------------------
+class EvalConfig(BaseModel):
+    cycle_sec: float = 5.0
+    # НОВОЕ: Максимальное количество сигналов для расчета статистики
+    signals_eval_limit: int = Field(default=500, description="Max number of recent signals to use for evaluation stats.")
+
+
+# ----------------------------------------------------
+# STATS
+# ----------------------------------------------------
+class StatsConfig(BaseModel):
+    max_market_stats: int = 50
+
+
+# ----------------------------------------------------
+# ML
+# ----------------------------------------------------
 class MLConfig(BaseModel):
-    enabled: bool = False
-    model_type: str = "logreg"
-    min_score: float = 0.0
-    retrain_interval_sec: int = 300
-    history_window: int = 500
-
-
-# -----------------------------
-# PARAM TUNER CONFIG
-# -----------------------------
-class TunerConfig(BaseModel):
-    enabled: bool = False
-    update_interval_sec: int = 120
-    history_window: int = 500
-
-
-# -----------------------------
-# HISTORY CONFIG
-# -----------------------------
-class HistoryConfig(BaseModel):
     enabled: bool = True
-    signals_max_len: int = 10000
-    spreads_max_len: int = 1000
-    features_max_len: int = 5000
-    ttl_sec: int | None = 7 * 24 * 3600
-    store_spreads: bool = True
+    train_interval_sec: float = 300.0
+    history_window: int = 2000
+    min_score: float = 0.6
 
 
-# -----------------------------
-# CLUSTERING CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# CLUSTERING
+# ----------------------------------------------------
 class ClusteringConfig(BaseModel):
     enabled: bool = False
-    k: int = 3
-    update_interval_sec: int = 600
-    history_window: int = 300
+    min_samples: int = 5
+    eps: float = 0.4
 
 
-# -----------------------------
-# MAIN CONFIG
-# -----------------------------
+# ----------------------------------------------------
+# HISTORY STORE
+# ----------------------------------------------------
+class HistoryConfig(BaseModel):
+    enable: bool = True
+    signals_max_len: int = 5000
+    spreads_max_len: int = 100
+    features_max_len: int = 10000
+    ttl_sec: int | None = None # TTL for history records
+
+
+# ----------------------------------------------------\
+# TELEGRAM
+# ----------------------------------------------------\
+class TelegramConfig(BaseModel):
+    token: str = ""
+    chat_id: int = 0
+    admin_chat_id: int = 0
+    enabled: bool = False
+
+
+# ----------------------------------------------------\
+# LLM
+# ----------------------------------------------------\
+class LLMConfig(BaseModel):
+    enabled: bool = False
+    provider: str = "cloudflare"
+    account_id: str = ""
+    api_key: str = ""
+    max_signals: int = 50
+    update_interval_sec: float = 900.0 # 15 minutes
+
+
+# ----------------------------------------------------
+# PARAM TUNER
+# ----------------------------------------------------\
+class TunerConfig(BaseModel):
+    enabled: bool = False
+    update_interval_sec: float = 300.0
+    history_window: int = 5000 # Use 5000 signals for snapshot calculation
+
+
+# ----------------------------------------------------\
+# FINAL CONFIG
+# ----------------------------------------------------\
 class Config(BaseModel):
     redis: RedisConfig = RedisConfig()
     api: APIConfig = APIConfig()
     collector: CollectorConfig = CollectorConfig()
     engine: EngineConfig = EngineConfig()
+    eval: EvalConfig = EvalConfig()
+    stats: StatsConfig = StatsConfig()
     ml: MLConfig = MLConfig()
-    tuner: TunerConfig = TunerConfig()
-    history: HistoryConfig = HistoryConfig()
     clustering: ClusteringConfig = ClusteringConfig()
+    history: HistoryConfig = HistoryConfig()
+    telegram: TelegramConfig = TelegramConfig()
+    llm: LLMConfig = LLMConfig()
+    tuner: TunerConfig = TunerConfig()
 
 
 CONFIG = Config()

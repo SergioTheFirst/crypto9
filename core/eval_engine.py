@@ -8,14 +8,14 @@ from state.models import SignalStats
 log = logging.getLogger("core.eval_engine")
 
 
-async def run_eval_engine(redis: RedisState, cfg):
+async def run_eval_engine(redis, cfg):
+    interval = cfg.eval.cycle_sec
     log.info("Eval engine started")
-
-    interval = cfg.engine.cycle_eval_sec
 
     while True:
         try:
             await _cycle(redis)
+
         except Exception as e:
             log.error(f"Eval engine error: {e}")
 

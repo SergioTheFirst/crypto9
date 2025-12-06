@@ -38,62 +38,84 @@ def _pick_best_books(books: dict[str, NormalizedBook]) -> Optional[tuple[Normali
     if not books:
         return None
 
+    # Лучшая цена для покупки (минимум ask)
     best_ask = min(books.values(), key=lambda b: b.ask)
+    # Лучшая цена для продажи (максимум bid)
     best_bid = max(books.values(), key=lambda b: b.bid)
 
+    # Проверка, что арбитражная возможность существует
     if best_bid.bid <= best_ask.ask:
+        return None
+
+    # Арбитраж внутри одной биржи не допускается
+    if best_bid.exchange == best_ask.exchange:
         return None
 
     return best_ask, best_bid
 
 
-async def _cycle(redis: RedisState, cfg, history: HistoryStore, signal_filter: SignalFilter, clusterer: SignalClusterer) -> None:
-    market_stats_list = await redis.get_market_stats()
-    exchange_stats_list = await redis.get_exchange_stats()
-    market_stats = {m.symbol: m for m in market_stats_list}
-    exchange_stats = {e.exchange: e for e in exchange_stats_list}
+async def _cycle(
+    redis: RedisState,
+    cfg,
+    history: HistoryStore,
+    signal_filter: SignalFilter,
+    clusterer: SignalClusterer,
+):
+    market_stats = await redis.get_market_stats()
+    exchange_stats = await redis.get_exchange_stats()
+    param_snap = await redis.get_param_snapshot()
 
-    tuned = await redis.get_param_snapshot()
-    effective_min_net = tuned.min_net_profit_usd if tuned else cfg.engine.min_net_profit_usd
-    effective_min_spread_bps = tuned.min_spread_bps if tuned else cfg.engine.min_spread_bps
-    effective_min_vol = tuned.min_volume_usd if tuned else cfg.engine.min_volume_usd
+    # Берем параметры из тюнера, если он включен, иначе из конфига
+    effective_min_spread = param_snap.min_spread_bps if param_snap else cfg.engine.min_spread_bps
+    effective_min_net = param_snap.min_net_profit_usd if param_snap else cfg.engine.min_net_profit_usd
+    effective_min_vol = param_snap.min_volume_usd if param_snap else cfg.engine.min_volume_usd
 
     for symbol in cfg.collector.symbols:
         books = await redis.get_books(symbol)
-        if len(books) < 2:
+        best_pair = _pick_best_books(books)
+
+        if not best_pair:
             continue
 
-        picked = _pick_best_books(books)
-        if not picked:
-            continue
+        best_ask, best_bid = best_pair
 
-        best_ask, best_bid = picked
+        # --- РАСЧЕТ ПАРАМЕТРОВ СИГНАЛА ---
         spread = best_bid.bid - best_ask.ask
-
-        fee_rate = cfg.engine.fee_rate
-        slippage_rate = cfg.engine.slippage_rate
-        volume_usd = cfg.engine.trade_volume_usd
-
-        effective_buy = best_ask.ask * (1 + fee_rate + slippage_rate)
-        effective_sell = best_bid.bid * (1 - fee_rate - slippage_rate)
-
-        # assume volume denominated in quote asset USD
-        qty = volume_usd / effective_buy
-        gross = effective_sell * qty
-        cost = effective_buy * qty
-        net_profit = gross - cost
-
-        base_mid = (best_ask.ask + best_bid.bid) / 2 if best_bid.bid else 0
+        base_mid = (best_ask.ask + best_bid.bid) / 2.0
         spread_bps = (spread / base_mid) * 10_000 if base_mid else 0.0
-        net_profit_bps = (net_profit / volume_usd) * 10_000 if volume_usd else 0.0
 
-        if spread_bps < effective_min_spread_bps:
+        # НОВОЕ: Расчет чистой прибыли
+        volume_calc_usd = cfg.engine.volume_calc_usd
+        fee_rate = cfg.engine.default_fee_rate
+        slippage_rate = cfg.engine.default_slippage_rate
+
+        # Количество базовой валюты (например, BTC) для объема volume_calc_usd
+        quantity_base = volume_calc_usd / base_mid
+
+        # Валовая прибыль в USD
+        gross_profit = spread * quantity_base
+
+        # Общие комиссии (покупка + продажа)
+        total_fees_usd = 2 * volume_calc_usd * fee_rate
+
+        # Оценка проскальзывания (в USD)
+        total_slippage_usd = volume_calc_usd * slippage_rate
+
+        # Чистая прибыль
+        net_profit = gross_profit - total_fees_usd - total_slippage_usd
+        net_profit_bps = (net_profit / volume_calc_usd) * 10_000 if volume_calc_usd else 0.0
+        volume_usd = volume_calc_usd # Используем объем для фильтрации/отчета
+
+        # --- ФИЛЬТРАЦИЯ ---
+        if spread_bps < effective_min_spread:
             continue
         if net_profit < effective_min_net:
             continue
+        # Используем volume_calc_usd как необходимый объем
         if volume_usd < effective_min_vol:
             continue
 
+        # --- СОЗДАНИЕ СИГНАЛА ---
         sig = CoreSignal(
             symbol=symbol,
             buy_exchange=best_ask.exchange,
@@ -103,13 +125,14 @@ async def _cycle(redis: RedisState, cfg, history: HistoryStore, signal_filter: S
             volume_usd=volume_usd,
             spread=spread,
             spread_bps=spread_bps,
-            fee_rate=fee_rate,
-            slippage_rate=slippage_rate,
+            fee_rate=fee_rate, # Используем заданную ставку комиссии
+            slippage_rate=slippage_rate, # Используем заданную ставку проскальзывания
             net_profit=net_profit,
             net_profit_bps=net_profit_bps,
             created_at=datetime.utcnow(),
         )
 
+        # ML Score and Clustering (already exists)
         features = build_signal_features(sig, market_stats, exchange_stats)
         ml_score = await signal_filter.score(features)
         sig.ml_score = ml_score
@@ -122,13 +145,12 @@ async def _cycle(redis: RedisState, cfg, history: HistoryStore, signal_filter: S
 
         await redis.push_signal(sig)
         await history.append_signal(sig)
+        # Сохраняем фичи для обучения: label=1 (прибыльный), label=0 (убыточный)
         await history.append_features(features, label=1 if net_profit > 0 else 0)
         log.debug(
-            "New signal %s -> buy %s / sell %s | spread=%.6f net=%.6f ml=%.3f",
-            symbol,
-            best_ask.exchange,
-            best_bid.exchange,
-            spread,
-            net_profit,
-            ml_score if ml_score is not None else -1,
+            "New signal %s -> %.2f USD (S:%.2f BPS, ML:%.2f)",
+            sig.symbol,
+            sig.net_profit,
+            sig.spread_bps,
+            sig.ml_score or 0.0,
         )

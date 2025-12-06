@@ -2,12 +2,13 @@ import asyncio
 import json
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("ml.signal_filter")
 
 from analytics.features import label_from_profit
 from analytics.history_store import HistoryStore
+from state.redis_state import RedisState
 
 
 def _sigmoid(x: float) -> float:
@@ -34,69 +35,61 @@ class SimpleLogisticModel:
                 vec = self._vectorize(feats)
                 score = self.bias + sum(self.weights.get(k, 0.0) * v for k, v in zip(self.feature_order, vec))
                 prob = _sigmoid(score)
-                error = prob - label
+
+                # Gradient descent step
+                error = label - prob
+                self.bias += lr * error
                 for k, v in zip(self.feature_order, vec):
-                    self.weights[k] = self.weights.get(k, 0.0) - lr * error * v
-                self.bias -= lr * error
+                    self.weights[k] = self.weights.get(k, 0.0) + lr * error * v
 
     def predict_proba(self, features: Dict[str, float]) -> float:
-        if not self.feature_order:
-            self.feature_order = sorted(features.keys())
         vec = self._vectorize(features)
         score = self.bias + sum(self.weights.get(k, 0.0) * v for k, v in zip(self.feature_order, vec))
-        return float(_sigmoid(score))
+        return _sigmoid(score)
 
-    def snapshot(self) -> Dict[str, float]:
-        payload = {"bias": self.bias}
-        payload.update({f"w:{k}": v for k, v in self.weights.items()})
-        return payload
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "weights": self.weights,
+            "bias": self.bias,
+            "feature_order": self.feature_order,
+        }
 
-    def load_snapshot(self, snap: Dict[str, float]):
+    def load_snapshot(self, snap: Dict[str, Any]):
+        self.weights = snap.get("weights", {})
         self.bias = snap.get("bias", 0.0)
-        self.weights = {k[2:]: v for k, v in snap.items() if k.startswith("w:")}
+        self.feature_order = snap.get("feature_order", [])
 
 
 class SignalFilter:
-    def __init__(self, cfg, redis):
+    def __init__(self, cfg, redis: RedisState):
         self.cfg = cfg
         self.redis = redis
         self.model = SimpleLogisticModel()
         self._last_error_logged = False
+        self._store_key = "state:ml:signal_filter"
 
     async def training_loop(self, history: HistoryStore):
-        if not self.cfg.ml.enabled:
+        if not self.cfg.ml.enable: 
             return
-        interval = self.cfg.ml.retrain_interval_sec
+        
+        interval = self.cfg.ml.update_interval_sec
+        log.info("Signal filter training loop started")
+
         while True:
             try:
-                await self.train(history)
-                self._last_error_logged = False
+                await self.re_train(history)
             except Exception as exc:
-                if not self._last_error_logged:
-                    log.error("Signal filter training failed: %s", exc)
-                    self._last_error_logged = True
+                log.error("Signal filter training error: %s", exc)
+            
             await asyncio.sleep(interval)
-
-    async def train(self, history: HistoryStore):
+            
+    async def re_train(self, history: HistoryStore):
         raw_features = await history.recent_features(self.cfg.ml.history_window)
-        samples: List[Tuple[Dict[str, float], int]] = []
+        samples = []
 
         if not raw_features:
-            raw_signals = await history.recent_signals(self.cfg.ml.history_window)
-            profit_threshold = self.cfg.engine.min_net_profit_usd
-            for item in raw_signals:
-                try:
-                    from state.models import CoreSignal  # local import to avoid cycles
-
-                    sig = CoreSignal(**item)
-                except Exception:
-                    continue
-                feats = {}
-                label = label_from_profit(sig, profit_threshold)
-                if hasattr(sig, "features"):
-                    feats = getattr(sig, "features")
-                if feats:
-                    samples.append((feats, label))
+            log.debug("No historical features found, skipping training")
+            pass
         else:
             for item in raw_features:
                 feats = item.get("features") or {}
@@ -116,7 +109,7 @@ class SignalFilter:
         log.debug("Signal filter trained on %d samples", len(samples))
 
     async def score(self, features: Dict[str, float]) -> Optional[float]:
-        if not self.cfg.ml.enabled:
+        if not self.cfg.ml.enable:
             return None
         try:
             if not self.model.weights:
